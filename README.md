@@ -15,9 +15,12 @@ Saga 是一个本地写作工具：按模板新建一本书稿，安静地写，
 - **章节管理**：章节之间用加号插入新页；右键可以上移、下移、删除。删除的文字会进入 `darlings/`，随时可以找回。
 - **导出成品**：TXT、Markdown、HTML、EPUB、DOCX、ODT、RTF、LaTeX、PDF，以及 KDP 纸质书的内页 PDF + 封面模板。
 - **示例书**：随应用附带《小城畸人》（舍伍德·安德森，公版作品），打开就能看到一份完整书稿的样子。
+- **帮助与自动更新**：顶栏「帮助」显示当前版本、GitHub 仓库地址和反馈邮箱；启动后自动检查新版本，发现新版会弹窗提示，确认后下载、校验 SHA256 并安装。
 - **AI 接入**：安装版自带命令行和 MCP 服务，可让 Claude Desktop、Cursor、Trae 等读写书稿。
 
 ![写作界面](docs/editor.png)
+
+![帮助与自动更新](docs/help.png)
 
 ## 书稿文件夹
 
@@ -32,7 +35,7 @@ Saga 只认识这样的文件夹。EPUB、PDF、TXT 是导出后的成品，不�
 
 ## 下载
 
-安装包（`Saga-Setup-*.exe`）和便携版（`Saga-Portable-*.exe`）放在本仓库的 **Releases** 页面。
+安装包（`Saga-Setup-*.exe`）和便携版（`Saga-Portable-*.exe`）放在本仓库的 **Releases** 页面，当前版本 **1.2.0**。
 
 便携版可以直接运行，但 AI 接入（CLI / MCP）需要安装版，因为便携版每次从临时目录启动。
 
