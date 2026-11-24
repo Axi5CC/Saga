@@ -1447,15 +1447,6 @@ for (const modal of $$('.modal')) {
   })
 }
 
-$('#help-feedback-btn').addEventListener('click', async () => {
-  try {
-    await window.saga.feedback()
-    closeModal('help')
-  } catch (err) {
-    toast('打开反馈页面失败，请手动访问 GitHub 项目页')
-  }
-})
-
 $('#help-copy-mail').addEventListener('click', async () => {
   try {
     await window.saga.copyText('396673164@qq.com')

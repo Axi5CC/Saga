@@ -1,7 +1,7 @@
 {
   "name": "saga",
   "productName": "Saga",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Saga — a local writing app for books: create a template book folder, write, then export.",
   "author": "Axi5CC",
   "license": "MIT",

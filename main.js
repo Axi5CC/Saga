@@ -14,7 +14,7 @@
 
     Electron 43, contextIsolation on, nodeIntegration off. No bundler.  */
 
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, clipboard, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, clipboard } = require('electron')
 const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const path = require('node:path')
@@ -567,11 +567,6 @@ ipcMain.on('ui:log', (_e, text) => logLine('ui: ' + text))
 
 ipcMain.handle('clipboard:write', async (_e, text) => {
   clipboard.writeText(String(text == null ? '' : text))
-  return true
-})
-
-ipcMain.handle('app:feedback', async () => {
-  await shell.openExternal('https://github.com/Axi5CC/Saga/issues/new')
   return true
 })
 
