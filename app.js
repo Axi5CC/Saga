@@ -1456,6 +1456,87 @@ $('#help-copy-mail').addEventListener('click', async () => {
   }
 })
 
+/* ---------- 检查更新 ---------- */
+
+const updateBtn = $('#help-update-btn')
+const updateStatus = $('#help-update-status')
+let updatePhase = 'idle'
+let updateInfo = null
+
+function setUpdateState (phase, label, status) {
+  updatePhase = phase
+  updateBtn.textContent = label
+  updateBtn.disabled = phase === 'checking' || phase === 'downloading' || phase === 'installing'
+  updateStatus.textContent = status || ''
+  updateStatus.hidden = !status
+}
+
+async function downloadUpdate () {
+  setUpdateState('downloading', '正在下载…', `发现新版本 ${updateInfo.latest}，正在下载… 0%`)
+  try {
+    const r = await window.saga.updateDownload()
+    if (!r || !r.ok) throw new Error((r && r.error) || '下载失败')
+    if (r.portable) {
+      setUpdateState('portable', '打开文件夹', '新版已下载。关闭 Saga 后，用下载的文件替换当前便携版。')
+    } else {
+      setUpdateState('downloaded', '立即安装', `新版本 ${updateInfo.latest} 已下载，点击「立即安装」启动安装程序。`)
+    }
+  } catch (err) {
+    setUpdateState('error', '重试', '下载失败：' + cleanError(err))
+  }
+}
+
+async function checkForUpdates () {
+  setUpdateState('checking', '正在检查…', '正在连接 GitHub…')
+  try {
+    const r = await window.saga.updateCheck()
+    if (!r || !r.ok) throw new Error((r && r.error) || '检查失败')
+    updateInfo = r
+    if (!r.available) {
+      setUpdateState('latest', '重新检查', `已是最新版本（${r.current}）`)
+      return
+    }
+    await downloadUpdate()
+  } catch (err) {
+    setUpdateState('error', '重试', '检查失败：' + cleanError(err))
+  }
+}
+
+async function installUpdate () {
+  if (updatePhase === 'portable') {
+    try {
+      await window.saga.updateInstall()
+    } catch (err) {
+      toast('打开文件夹失败')
+    }
+    return
+  }
+  setUpdateState('installing', '请稍候…', '正在启动安装程序，Saga 即将退出…')
+  try {
+    const r = await window.saga.updateInstall()
+    if (!r || !r.ok) throw new Error((r && r.error) || '无法启动安装程序')
+  } catch (err) {
+    setUpdateState('downloaded', '立即安装', '启动安装程序失败：' + cleanError(err))
+  }
+}
+
+updateBtn.addEventListener('click', () => {
+  if (updatePhase === 'downloaded' || updatePhase === 'portable') return installUpdate()
+  checkForUpdates()
+})
+
+window.saga.onUpdateProgress((p) => {
+  if (updatePhase !== 'downloading') return
+  const total = p && p.total ? p.total : 0
+  const pct = total ? Math.min(100, Math.floor((p.received / total) * 100)) : 0
+  updateStatus.textContent = `正在下载更新… ${pct}%`
+  updateStatus.hidden = false
+})
+
+window.saga.appVersion().then((v) => {
+  $('#help-version').textContent = v || '未知'
+}).catch(() => {})
+
 /* ---------- 使用引导 ---------- */
 
 const GUIDE_SEEN = 'saga.guide.seen'

@@ -14,11 +14,12 @@
 
     Electron 43, contextIsolation on, nodeIntegration off. No bundler.  */
 
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, clipboard } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, clipboard, net, shell } = require('electron')
 const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const path = require('node:path')
 const os = require('node:os')
+const crypto = require('node:crypto')
 const { pathToFileURL } = require('node:url')
 const { spawn } = require('node:child_process')
 const bundledAi = path.join(__dirname, 'ai')
@@ -773,6 +774,159 @@ ipcMain.handle('app:theme', async (_e, theme) => {
     writeJSON(settingsFile(), s)
   }
   return t
+})
+
+/* ---------- 检查更新 ---------- */
+
+const UPDATE_API = 'https://api.github.com/repos/Axi5CC/Saga/releases/latest'
+let pendingUpdate = null
+let downloadedUpdate = null
+
+function updateErrorText (err) {
+  const text = err && err.message ? err.message : String(err)
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ERR_TIMED_OUT|ERR_CONNECTION|net::/i.test(text)) {
+    return '无法连接 GitHub，请检查网络或代理'
+  }
+  return text
+}
+
+function versionBits (v) {
+  return String(v || '').replace(/^v/i, '').split('.').map((x) => parseInt(x, 10) || 0)
+}
+
+function isNewerVersion (a, b) {
+  const x = versionBits(a)
+  const y = versionBits(b)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const xa = x[i] || 0
+    const ya = y[i] || 0
+    if (xa !== ya) return xa > ya
+  }
+  return false
+}
+
+function githubJSON (url) {
+  return new Promise((resolve, reject) => {
+    const req = net.request({ url, redirect: 'follow' })
+    req.setHeader('Accept', 'application/vnd.github+json')
+    req.setHeader('User-Agent', 'Saga/' + app.getVersion())
+    let body = ''
+    req.on('response', (res) => {
+      if (res.statusCode !== 200) {
+        res.resume()
+        reject(new Error('GitHub 返回 ' + res.statusCode))
+        return
+      }
+      res.on('data', (chunk) => { body += chunk })
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)) } catch { reject(new Error('无法读取更新信息')) }
+      })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+ipcMain.handle('app:version', () => app.getVersion())
+
+ipcMain.handle('update:check', async () => {
+  try {
+    const rel = await githubJSON(UPDATE_API)
+    const latest = String(rel.tag_name || '').replace(/^v/i, '')
+    if (!latest) throw new Error('没有找到版本号')
+    const portable = !!process.env.PORTABLE_EXECUTABLE_DIR
+    const prefix = portable ? 'Saga-Portable-' : 'Saga-Setup-'
+    const asset = (rel.assets || []).find((a) => a && a.name && a.name.startsWith(prefix) && a.name.endsWith('.exe'))
+    if (!asset) throw new Error('这个版本没有可用的安装包')
+    const available = isNewerVersion(latest, app.getVersion())
+    pendingUpdate = available ? { version: latest, asset, portable } : null
+    downloadedUpdate = null
+    return {
+      ok: true,
+      current: app.getVersion(),
+      latest,
+      available,
+      portable,
+      name: asset.name,
+      size: asset.size || 0
+    }
+  } catch (err) {
+    return { ok: false, error: updateErrorText(err) }
+  }
+})
+
+ipcMain.handle('update:download', async () => {
+  if (!pendingUpdate) return { ok: false, error: '请先检查更新' }
+  const { asset, portable, version } = pendingUpdate
+  let target
+  try {
+    target = new URL(asset.browser_download_url)
+  } catch {
+    return { ok: false, error: '下载地址不合法' }
+  }
+  if (target.protocol !== 'https:' || target.hostname !== 'github.com') {
+    return { ok: false, error: '下载地址不合法' }
+  }
+  const dir = portable ? app.getPath('downloads') : path.join(app.getPath('temp'), 'Saga-Update')
+  fs.mkdirSync(dir, { recursive: true })
+  const dest = path.join(dir, asset.name)
+  const part = dest + '.part'
+  try { fs.unlinkSync(part) } catch {}
+  let received = 0
+  const hash = crypto.createHash('sha256')
+  try {
+    await new Promise((resolve, reject) => {
+      const req = net.request({ url: target.toString(), redirect: 'follow' })
+      req.setHeader('User-Agent', 'Saga/' + app.getVersion())
+      req.on('response', (res) => {
+        if (res.statusCode !== 200) {
+          res.resume()
+          reject(new Error('下载失败：HTTP ' + res.statusCode))
+          return
+        }
+        const out = fs.createWriteStream(part)
+        res.on('data', (chunk) => {
+          received += chunk.length
+          hash.update(chunk)
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('update:progress', { received, total: asset.size || 0 })
+          }
+        })
+        res.pipe(out)
+        out.on('finish', resolve)
+        out.on('error', reject)
+        res.on('error', reject)
+      })
+      req.on('error', reject)
+      req.end()
+    })
+    const size = fs.statSync(part).size
+    if (asset.size && size !== asset.size) throw new Error('下载不完整')
+    if (asset.digest && /^sha256:/i.test(asset.digest)) {
+      const want = asset.digest.slice(7).toLowerCase()
+      if (hash.digest('hex') !== want) throw new Error('下载文件校验失败')
+    }
+    try { fs.unlinkSync(dest) } catch {}
+    fs.renameSync(part, dest)
+    downloadedUpdate = { path: dest, portable, version }
+    return { ok: true, path: dest, portable, version }
+  } catch (err) {
+    try { fs.unlinkSync(part) } catch {}
+    return { ok: false, error: updateErrorText(err) }
+  }
+})
+
+ipcMain.handle('update:install', async () => {
+  if (!downloadedUpdate) return { ok: false, error: '还没有下载更新' }
+  const { path: file, portable } = downloadedUpdate
+  if (portable) {
+    shell.showItemInFolder(file)
+    return { ok: true, portable: true, path: file }
+  }
+  const err = await shell.openPath(file)
+  if (err) return { ok: false, error: err }
+  setTimeout(() => { app.quit() }, 900)
+  return { ok: true, portable: false }
 })
 
 ipcMain.handle('chapter:write', async (_e, chId, html) => {
