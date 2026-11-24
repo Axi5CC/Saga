@@ -1456,6 +1456,15 @@ $('#help-feedback-btn').addEventListener('click', async () => {
   }
 })
 
+$('#help-copy-mail').addEventListener('click', async () => {
+  try {
+    await window.saga.copyText('396673164@qq.com')
+    toast('邮箱已复制')
+  } catch (err) {
+    toast('复制失败，请手动选择邮箱')
+  }
+})
+
 /* ---------- 使用引导 ---------- */
 
 const GUIDE_SEEN = 'saga.guide.seen'
