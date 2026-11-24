@@ -1,0 +1,7 @@
+node_modules/
+*.log
+Saga.lnk
+ai/*.txt
+info/*.txt
+.DS_Store
+Thumbs.db

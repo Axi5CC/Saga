@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-font="serif">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:">
+  <title>Saga</title>
+  <link rel="stylesheet" href="fonts/fonts.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- 0. the app's own bar: where 设置 and 简介 live -->
+  <header id="topbar">
+    <nav id="topbar-links">
+      <button id="export-btn" class="top-link" type="button" data-open="export" hidden>导出</button>
+      <button id="ai-btn" class="top-link" type="button" data-open="ai">AI</button>
+      <button class="top-link" type="button" data-open="settings">设置</button>
+      <button class="top-link" type="button" data-open="about">简介</button>
+    </nav>
+  </header>
+
+  <!-- 1. the way in: a book is a folder of plain files -->
+  <div id="welcome" class="view">
+    <div class="welcome-in">
+      <h1 class="welcome-title">Saga</h1>
+      <p class="welcome-sub">写一本书</p>
+      <div class="welcome-actions">
+        <button id="import-btn" class="primary">打开书稿文件夹…</button>
+        <button id="new-btn" class="secondary" type="button">新建书籍…</button>
+      </div>
+      <p class="welcome-note">Saga 打开的是按模板创作的书稿文件夹，不是 EPUB / PDF / TXT 等成品电子书。<br>写完再从「导出」生成成品。</p>
+      <p class="welcome-drop">也可以把 Saga 书稿文件夹直接拖进这个窗口</p>
+      <div class="welcome-links">
+        <button id="guide-btn" class="welcome-guide" type="button">第一次使用？查看使用引导</button>
+      </div>
+      <p id="welcome-error" class="welcome-error" hidden></p>
+      <div class="home-cards">
+        <section class="example-card" aria-labelledby="example-title">
+          <div class="example-head">
+            <span class="example-label">示例书</span>
+            <span class="example-tag">随应用附带</span>
+          </div>
+          <div class="example-body">
+            <div class="example-cover" aria-hidden="true">
+              <span class="example-cover-top">SAGA</span>
+              <span class="example-cover-rule"></span>
+              <span class="example-cover-word">示例书</span>
+            </div>
+            <div class="example-copy">
+              <h2 id="example-title" class="example-title">小城畸人</h2>
+              <p class="example-meta">舍伍德·安德森 · 25 篇 · 40 页</p>
+              <p class="example-desc">按模板创作的完整书稿。打开会复制一份到文稿，原样本不动。</p>
+              <button id="example-btn" class="example-open" type="button">打开示例书</button>
+            </div>
+          </div>
+        </section>
+        <div id="recent-card" class="recent-card" hidden>
+          <div class="recent-head"><span class="recent-label">最近打开</span></div>
+          <div id="recent-list" class="recent-list"></div>
+        </div>
+      </div>
+      <p id="build-line" class="welcome-build"></p>
+    </div>
+  </div>
+
+  <!-- 2. the editor: the book's shape on the left, the manuscript on paper -->
+  <div id="editor" class="view" hidden>
+    <aside id="nav-pane">
+      <div id="nav-head">
+        <input id="nav-search-input" type="search" placeholder="搜索章节" title="搜索章节"
+          spellcheck="false" autocomplete="off">
+      </div>
+      <div id="nav-list"></div>
+      <div id="nav-empty" hidden>没有匹配的章节</div>
+    </aside>
+
+    <main id="stage">
+      <div id="paper">
+        <section id="title-page" class="sheet">
+          <h1 id="tp-title"></h1>
+          <p id="tp-subtitle"></p>
+          <p id="tp-author"></p>
+        </section>
+        <div id="chapters"></div>
+      </div>
+    </main>
+
+    <footer id="statusbar">
+      <i id="progress-line" aria-hidden="true"></i>
+      <button id="back-btn" class="bar-btn">← 首页</button>
+      <span id="stats">
+        <span id="stat-progress" title="阅读进度">0%</span>
+        <span id="stat-today">今日 0</span>
+        <span id="stat-book"></span>
+        <span id="stat-chapter" hidden></span>
+        <span id="stat-saved" hidden></span>
+      </span>
+      <span id="zoom">
+        <button id="zoom-out" class="bar-btn" title="缩小">−</button>
+        <span id="zoom-val">120%</span>
+        <button id="zoom-in" class="bar-btn" title="放大">+</button>
+      </span>
+    </footer>
+  </div>
+
+  <div id="opening" class="opening" hidden><span>正在打开…</span></div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <div id="settings-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="settings-title">设置</h2>
+        <button class="modal-x" type="button" data-close="settings" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-label">主题</p>
+        <div class="theme-choice" id="theme-choice">
+          <button class="theme-opt" type="button" data-theme="dark"><span class="theme-swatch dark"></span>深色</button>
+          <button class="theme-opt" type="button" data-theme="light"><span class="theme-swatch light"></span>浅色</button>
+        </div>
+        <p class="modal-note">主题只影响阅读和写作的房间，不影响书稿本身。</p>
+        <p class="modal-label font-label">正文字体</p>
+        <div class="font-choice" id="font-choice">
+          <button class="font-opt on" type="button" data-font="serif" title="思源宋体"><b class="font-sample">永</b><span>宋体</span></button>
+          <button class="font-opt" type="button" data-font="sans" title="思源黑体"><b class="font-sample">永</b><span>黑体</span></button>
+          <button class="font-opt" type="button" data-font="kai" title="霞鹜文楷"><b class="font-sample">永</b><span>楷体</span></button>
+          <button class="font-opt" type="button" data-font="fangsong" title="朱雀仿宋"><b class="font-sample">永</b><span>仿宋</span></button>
+          <button class="font-opt" type="button" data-font="xiaowei" title="站酷小薇"><b class="font-sample">永</b><span>小薇</span></button>
+          <button class="font-opt" type="button" data-font="brush" title="马善政毛笔"><b class="font-sample">永</b><span>毛笔</span></button>
+          <button class="font-opt" type="button" data-font="smiley" title="得意黑"><b class="font-sample">永</b><span>得意黑</span></button>
+          <button class="font-opt" type="button" data-font="system" title="本机默认"><b class="font-sample">永</b><span>系统默认</span></button>
+        </div>
+        <p class="modal-note">只影响阅读和写作；导出时 PDF / KDP / EPUB 会带上这套字体，其他格式记录字体名。</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirm-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="confirm-title">删除章节</h2>
+        <button class="modal-x" type="button" data-close="confirm" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="confirm-text" class="modal-note"></p>
+      </div>
+      <div class="modal-foot">
+        <button id="confirm-cancel" class="ghost-btn" type="button" data-close="confirm">取消</button>
+        <button id="confirm-ok" class="danger-btn" type="button">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="newbook-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="newbook-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="newbook-title">新建书籍</h2>
+        <button class="modal-x" type="button" data-close="newbook" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <label class="field"><span>书名</span><input id="nb-title" type="text" placeholder="未命名" autocomplete="off"></label>
+        <label class="field"><span>作者</span><input id="nb-author" type="text" placeholder="佚名" autocomplete="off"></label>
+        <p class="modal-note">会按模板建好前置页、三部分正文和后置页，页页都是空的，字数从零开始。</p>
+        <p id="nb-error" class="welcome-error" hidden></p>
+      </div>
+      <div class="modal-foot">
+        <button class="ghost-btn" type="button" data-close="newbook">取消</button>
+        <button id="nb-create" class="primary" type="button">选择文件夹并新建</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="export-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="export-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="export-title">导出</h2>
+        <button class="modal-x" type="button" data-close="export" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-note">整本书按章节顺序导出，屏幕上的装饰不会进入文件。</p>
+        <div class="export-choice">
+          <button class="export-opt" type="button" data-export="txt"><b>TXT</b><span>纯文本，一章接一章</span></button>
+          <button class="export-opt" type="button" data-export="md"><b>Markdown</b><span>标题与段落，方便再排版</span></button>
+          <button class="export-opt" type="button" data-export="html"><b>HTML</b><span>单个网页，浏览器直接打开</span></button>
+          <button class="export-opt" type="button" data-export="epub"><b>EPUB</b><span>电子书，手机和阅读器都能打开</span></button>
+          <button class="export-opt" type="button" data-export="docx"><b>DOCX</b><span>Word 文档，方便编辑和批注</span></button>
+          <button class="export-opt" type="button" data-export="odt"><b>ODT</b><span>LibreOffice / OpenOffice 文档</span></button>
+          <button class="export-opt" type="button" data-export="rtf"><b>RTF</b><span>Word、WPS 都能打开的富文本</span></button>
+          <button class="export-opt" type="button" data-export="tex"><b>LaTeX</b><span>排版源码，用 XeLaTeX 编译</span></button>
+          <button class="export-opt" type="button" data-export="pdf"><b>PDF</b><span>A4 纸张，可以直接打印</span></button>
+          <button class="export-opt" type="button" data-open="kdp"><b>KDP</b><span>纸质书：内页 PDF + 封面模板</span></button>
+        </div>
+        <p id="export-note" class="modal-note"></p>
+        <p class="modal-note">当前正文字体会被写入成品：PDF / KDP / EPUB 内嵌字体，DOCX / ODT / RTF / HTML 记录字体名；TXT / Markdown 不携带字体。</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="kdp-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="kdp-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="kdp-title">纸质书（KDP）</h2>
+        <button class="modal-x" type="button" data-close="kdp" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-note">生成印刷内页 PDF，并按最终页数生成封面模板。内页按所选开本留好印刷用的内侧留白。</p>
+        <p class="modal-label">开本</p>
+        <div class="kdp-choice" id="kdp-trim">
+          <button class="kdp-opt" type="button" data-trim="5x8">5 × 8</button>
+          <button class="kdp-opt" type="button" data-trim="5.25x8">5.25 × 8</button>
+          <button class="kdp-opt" type="button" data-trim="5.5x8.5">5.5 × 8.5</button>
+          <button class="kdp-opt on" type="button" data-trim="6x9">6 × 9</button>
+        </div>
+        <p class="modal-label">纸张</p>
+        <div class="kdp-choice" id="kdp-paper">
+          <button class="kdp-opt on" type="button" data-paper="white">白纸</button>
+          <button class="kdp-opt" type="button" data-paper="cream">米色纸</button>
+        </div>
+        <p id="kdp-note" class="modal-note"></p>
+      </div>
+      <div class="modal-foot">
+        <button class="ghost-btn" type="button" data-close="kdp">取消</button>
+        <button id="kdp-create" class="primary" type="button">生成内页与封面</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ai-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="ai-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="ai-title">AI 接入</h2>
+        <button class="modal-x" type="button" data-close="ai" title="关闭">×</button>
+      </div>
+      <div class="modal-body ai-body">
+        <p class="modal-note">让 Claude Desktop、Cursor、Trae 等 AI 客户端读写 Saga 的书。书仍是普通文件夹，不需要联网服务。</p>
+        <p id="ai-warning" class="ai-warn" hidden></p>
+        <p id="ai-path-note" class="modal-note" hidden></p>
+        <p class="modal-label">MCP 配置</p>
+        <pre id="ai-mcp" class="ai-code">正在读取…</pre>
+        <div class="ai-actions"><button class="ghost-btn" type="button" data-copy="mcp">复制 MCP 配置</button></div>
+        <p class="modal-label">命令行</p>
+        <pre id="ai-cli" class="ai-code">正在读取…</pre>
+        <div class="ai-actions"><button class="ghost-btn" type="button" data-copy="cli">复制命令</button></div>
+        <p class="modal-note">AI 改写前会把原文备份到书的 darlings 文件夹；删除章节也只移入 darlings。若这本书正在窗口里打开，请先点「← 首页」再让 AI 写入。</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="guide-modal" class="modal" hidden>
+    <div class="modal-card guide-card" role="dialog" aria-modal="true" aria-labelledby="guide-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="guide-title">使用引导</h2>
+        <button class="modal-x" type="button" data-close="guide" title="关闭">×</button>
+      </div>
+      <div class="modal-body guide-body">
+        <p id="guide-step-no" class="guide-step-no">第 1 步 / 共 5 步</p>
+        <h3 id="guide-step-title" class="guide-step-title" aria-live="polite"></h3>
+        <div id="guide-step-body" class="guide-text" aria-live="polite"></div>
+        <div id="guide-dots" class="guide-dots"></div>
+      </div>
+      <div class="modal-foot guide-foot">
+        <button id="guide-skip" class="ghost-btn" type="button">跳过</button>
+        <div class="guide-actions">
+          <button id="guide-prev" class="ghost-btn" type="button">上一步</button>
+          <button id="guide-next" class="primary" type="button">下一步</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="about-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="about-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="about-title">简介</h2>
+        <button class="modal-x" type="button" data-close="about" title="关闭">×</button>
+      </div>
+      <div class="modal-body about-body">
+        <p class="about-name">Saga</p>
+        <p class="about-line">Saga 是写作工具，不是电子书阅读器。它打开和创建的是按模板生成的书稿文件夹，不是 EPUB、PDF、MOBI 等成品电子书。</p>
+        <p class="about-line">主线是「新建书稿 → 写作 → 导出成品」：顶栏「导出」可以把整本书生成 TXT、Markdown、HTML、EPUB、DOCX、ODT、RTF、LaTeX、PDF 和 KDP 纸质书。</p>
+        <p class="about-line">书就是文件夹：<code>book.json</code> 记录书的结构，<code>chapters/</code> 里每一章是一个 HTML 文件。</p>
+        <p class="about-label">书稿文件夹</p>
+        <pre class="about-tree">小城畸人/
+  book.json      书名、作者、章节顺序与章节类型
+  chapters/      每章一个 .html 文件
+  darlings/      删除或 AI 改写前的原文备份（可选）</pre>
+        <p class="about-line">Saga 打开和创建的就是这样的文件夹；EPUB、PDF 是导出后的成品，不是导入格式。</p>
+        <div class="about-actions">
+          <button id="about-example-btn" class="primary about-example" type="button">打开示例书《小城畸人》</button>
+          <button id="about-guide-btn" class="ghost-btn" type="button">使用引导</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "saga",
+  "productName": "Saga",
+  "version": "1.0.0",
+  "description": "Saga — a local writing app for books: create a template book folder, write, then export.",
+  "author": "Axi5CC",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Axi5CC/Saga.git"
+  },
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "saga": "node ai/cli.js",
+    "mcp": "node ai/mcp-server.js"
+  },
+  "devDependencies": {
+    "electron": "^43.0.0"
+  }
+}
