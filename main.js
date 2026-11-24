@@ -21,10 +21,15 @@ const path = require('node:path')
 const os = require('node:os')
 const { pathToFileURL } = require('node:url')
 const { spawn } = require('node:child_process')
+const bundledAi = path.join(__dirname, 'ai')
 const resourcesAi = process.resourcesPath ? path.join(process.resourcesPath, 'ai') : ''
-const aiDir = resourcesAi && fs.existsSync(path.join(resourcesAi, 'book-formats.js'))
+// the window's own copy rides inside app.asar, where the asar integrity fuse
+// covers it; the resources copy is the stable entry point for CLI / MCP
+// clients that run outside the app
+const aiDir = fs.existsSync(path.join(bundledAi, 'book-formats.js')) ? bundledAi : resourcesAi
+const externalAi = resourcesAi && fs.existsSync(path.join(resourcesAi, 'book-formats.js'))
   ? resourcesAi
-  : path.join(__dirname, 'ai')
+  : bundledAi
 const {
   fontOf, bookText, bookMarkdown, makeZip, epubFiles, docxFiles, htmlBook,
   rtfBook, odtFiles, latexBook, printHtml,
@@ -662,12 +667,12 @@ ipcMain.handle('book:close', async () => {
 ipcMain.handle('ai:info', async () => {
   const packaged = !!(process.resourcesPath && fs.existsSync(path.join(process.resourcesPath, 'ai', 'book-formats.js')))
   const portable = !!process.env.PORTABLE_EXECUTABLE_DIR
-  const cliScript = path.join(aiDir, 'cli.js')
-  const cliCmd = process.platform === 'win32' ? path.join(aiDir, 'saga.cmd') : cliScript
+  const cliScript = path.join(externalAi, 'cli.js')
+  const cliCmd = process.platform === 'win32' ? path.join(externalAi, 'saga.cmd') : cliScript
   const invoke = process.platform === 'win32' && packaged
     ? '"' + cliCmd + '"'
     : 'node "' + cliScript + '"'
-  const mcpPath = path.join(aiDir, 'mcp-server.js')
+  const mcpPath = path.join(externalAi, 'mcp-server.js')
   const mcpConfig = {
     mcpServers: {
       saga: {
@@ -682,7 +687,7 @@ ipcMain.handle('ai:info', async () => {
     packaged,
     portable,
     appPath: process.execPath,
-    aiDir,
+    aiDir: externalAi,
     cliPath: cliScript,
     cliCmd,
     mcpPath,

@@ -15,7 +15,10 @@ const HEADLESS_FLAG = '--headless-export'
 const RESULT_FLAG = '--headless-result'
 
 function packagedApp () {
-  return path.basename(path.dirname(__dirname)).toLowerCase() === 'resources'
+  // resources/ai when a CLI or MCP client runs this file, app.asar/ai when the
+  // window's own builder calls it from inside the package
+  const parent = path.basename(path.dirname(__dirname)).toLowerCase()
+  return parent === 'resources' || parent === 'app.asar'
 }
 
 function appRoot () {
