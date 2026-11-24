@@ -15,6 +15,7 @@
       <button id="export-btn" class="top-link" type="button" data-open="export" hidden>导出</button>
       <button id="ai-btn" class="top-link" type="button" data-open="ai">AI</button>
       <button class="top-link" type="button" data-open="settings">设置</button>
+      <button class="top-link" type="button" data-open="help">帮助</button>
       <button class="top-link" type="button" data-open="about">简介</button>
     </nav>
   </header>
@@ -265,6 +266,25 @@
           <button id="guide-prev" class="ghost-btn" type="button">上一步</button>
           <button id="guide-next" class="primary" type="button">下一步</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="help-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="help-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="help-title">帮助</h2>
+        <button class="modal-x" type="button" data-close="help" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-note">遇到问题、发现错误，或者想提一个新功能，都可以告诉作者。</p>
+        <p class="modal-label">问题反馈</p>
+        <p class="modal-note">反馈会公开在 Saga 的 GitHub Issues 里。请尽量写清楚：你做了什么、看到了什么、期望是什么。</p>
+        <p class="modal-note">Saga 是开源项目，反馈和更新都在 GitHub 上。</p>
+      </div>
+      <div class="modal-foot">
+        <button class="ghost-btn" type="button" data-close="help">关闭</button>
+        <button id="help-feedback-btn" class="primary" type="button">打开问题反馈</button>
       </div>
     </div>
   </div>

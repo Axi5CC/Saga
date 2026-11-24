@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('saga', {
   closeBook: () => ipcRenderer.invoke('book:close'),
   openExample: () => ipcRenderer.invoke('example:open'),
   aiInfo: () => ipcRenderer.invoke('ai:info'),
+  feedback: () => ipcRenderer.invoke('app:feedback'),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', String(text == null ? '' : text)),
   exportText: (format) => ipcRenderer.invoke('export:text', format),
   exportHtml: (opts) => ipcRenderer.invoke('export:html', opts),
