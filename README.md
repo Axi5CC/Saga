@@ -4,7 +4,7 @@ Saga 是一个本地写作工具：按模板新建一本书稿，安静地写，
 
 它不是电子书阅读器。Saga 打开和创建的是**书稿文件夹**，不是 EPUB、PDF、TXT 等成品电子书。
 
-![Saga 首页](docs/home.png)
+![Saga 首页](docs/home.png?v=2)
 
 ## 特点
 
@@ -18,9 +18,9 @@ Saga 是一个本地写作工具：按模板新建一本书稿，安静地写，
 - **帮助与自动更新**：顶栏「帮助」显示当前版本、GitHub 仓库地址和反馈邮箱；启动后自动检查新版本，发现新版会弹窗提示，确认后下载、校验 SHA256 并安装。
 - **AI 接入**：安装版自带命令行和 MCP 服务，可让 Claude Desktop、Cursor、Trae 等读写书稿。
 
-![写作界面](docs/editor.png)
+![写作界面](docs/editor.png?v=2)
 
-![帮助与自动更新](docs/help.png)
+![帮助与自动更新](docs/help.png?v=2)
 
 ## 书稿文件夹
 
