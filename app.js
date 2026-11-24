@@ -1180,7 +1180,17 @@ async function showRecents () {
   const box = $('#recent-list')
   if (!card || !box) return []
   box.textContent = ''
-  if (!list.length) { card.hidden = true; return [] }
+  if (!list.length) {
+    // the shelf stays, empty, so the page always says where books will land
+    card.hidden = false
+    box.classList.add('is-empty')
+    const empty = document.createElement('p')
+    empty.className = 'recent-empty'
+    empty.textContent = '还没有打开过书稿。打开一本后，它会出现在这里。'
+    box.appendChild(empty)
+    return []
+  }
+  box.classList.remove('is-empty')
 
   for (const item of list) {
     const row = document.createElement('div')
