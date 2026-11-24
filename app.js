@@ -1460,45 +1460,85 @@ $('#help-copy-mail').addEventListener('click', async () => {
 
 const updateBtn = $('#help-update-btn')
 const updateStatus = $('#help-update-status')
+const updateAction = $('#update-action')
+const updateModalStatus = $('#update-status')
+const updateText = $('#update-text')
 let updatePhase = 'idle'
 let updateInfo = null
 
-function setUpdateState (phase, label, status) {
+const HELP_LABEL = {
+  idle: '检查更新',
+  checking: '正在检查…',
+  latest: '重新检查',
+  available: '查看更新',
+  downloading: '正在下载…',
+  downloaded: '立即安装',
+  portable: '打开文件夹',
+  installing: '正在安装…',
+  error: '重试'
+}
+const ACTION_LABEL = {
+  available: '下载并安装',
+  downloading: '正在下载…',
+  downloaded: '立即安装',
+  portable: '打开文件夹',
+  installing: '正在安装…',
+  error: '重试'
+}
+
+function setUpdateState (phase, status) {
   updatePhase = phase
-  updateBtn.textContent = label
+  updateBtn.textContent = HELP_LABEL[phase] || '检查更新'
   updateBtn.disabled = phase === 'checking' || phase === 'downloading' || phase === 'installing'
   updateStatus.textContent = status || ''
   updateStatus.hidden = !status
+  updateAction.textContent = ACTION_LABEL[phase] || '下载并安装'
+  updateAction.disabled = phase === 'checking' || phase === 'downloading' || phase === 'installing'
+  updateModalStatus.textContent = status || ''
+  updateModalStatus.hidden = !status
+}
+
+function showUpdatePrompt () {
+  if (!updateInfo || !updateInfo.available) return
+  updateText.textContent = `当前版本 ${updateInfo.current}，最新版本 ${updateInfo.latest}。`
+  closeModal('help')
+  openModal('update')
 }
 
 async function downloadUpdate () {
-  setUpdateState('downloading', '正在下载…', `发现新版本 ${updateInfo.latest}，正在下载… 0%`)
+  if (!updateInfo || !updateInfo.available) return checkForUpdates()
+  setUpdateState('downloading', `正在下载 ${updateInfo.latest}… 0%`)
   try {
     const r = await window.saga.updateDownload()
     if (!r || !r.ok) throw new Error((r && r.error) || '下载失败')
     if (r.portable) {
-      setUpdateState('portable', '打开文件夹', '新版已下载。关闭 Saga 后，用下载的文件替换当前便携版。')
+      setUpdateState('portable', '新版已下载到「下载」文件夹。关闭 Saga 后替换当前便携版。')
     } else {
-      setUpdateState('downloaded', '立即安装', `新版本 ${updateInfo.latest} 已下载，点击「立即安装」启动安装程序。`)
+      setUpdateState('downloaded', `新版本 ${updateInfo.latest} 已下载，点击「立即安装」。`)
     }
   } catch (err) {
-    setUpdateState('error', '重试', '下载失败：' + cleanError(err))
+    setUpdateState('error', '下载失败：' + cleanError(err))
   }
 }
 
-async function checkForUpdates () {
-  setUpdateState('checking', '正在检查…', '正在连接 GitHub…')
+async function checkForUpdates ({ quiet = false } = {}) {
+  setUpdateState('checking', quiet ? '' : '正在连接 GitHub…')
   try {
     const r = await window.saga.updateCheck()
     if (!r || !r.ok) throw new Error((r && r.error) || '检查失败')
     updateInfo = r
     if (!r.available) {
-      setUpdateState('latest', '重新检查', `已是最新版本（${r.current}）`)
+      setUpdateState('latest', `已是最新版本（${r.current}）`)
       return
     }
-    await downloadUpdate()
+    setUpdateState('available', `发现新版本 ${r.latest}`)
+    showUpdatePrompt()
   } catch (err) {
-    setUpdateState('error', '重试', '检查失败：' + cleanError(err))
+    if (quiet) {
+      setUpdateState('idle', '')
+      return
+    }
+    setUpdateState('error', '检查失败：' + cleanError(err))
   }
 }
 
@@ -1506,36 +1546,64 @@ async function installUpdate () {
   if (updatePhase === 'portable') {
     try {
       await window.saga.updateInstall()
+      setUpdateState('portable', '已打开下载文件夹。关闭 Saga 后替换旧文件。')
     } catch (err) {
       toast('打开文件夹失败')
     }
     return
   }
-  setUpdateState('installing', '请稍候…', '正在启动安装程序，Saga 即将退出…')
+  setUpdateState('installing', '正在启动安装程序，Saga 即将退出…')
   try {
     const r = await window.saga.updateInstall()
     if (!r || !r.ok) throw new Error((r && r.error) || '无法启动安装程序')
   } catch (err) {
-    setUpdateState('downloaded', '立即安装', '启动安装程序失败：' + cleanError(err))
+    setUpdateState('downloaded', '启动安装程序失败：' + cleanError(err))
   }
 }
 
 updateBtn.addEventListener('click', () => {
+  if (updatePhase === 'available') return showUpdatePrompt()
   if (updatePhase === 'downloaded' || updatePhase === 'portable') return installUpdate()
   checkForUpdates()
+})
+
+updateAction.addEventListener('click', () => {
+  if (updatePhase === 'available') return downloadUpdate()
+  if (updatePhase === 'downloaded' || updatePhase === 'portable') return installUpdate()
+  if (updatePhase === 'error') return checkForUpdates()
 })
 
 window.saga.onUpdateProgress((p) => {
   if (updatePhase !== 'downloading') return
   const total = p && p.total ? p.total : 0
   const pct = total ? Math.min(100, Math.floor((p.received / total) * 100)) : 0
-  updateStatus.textContent = `正在下载更新… ${pct}%`
+  const text = `正在下载更新… ${pct}%`
+  updateStatus.textContent = text
   updateStatus.hidden = false
+  updateModalStatus.textContent = text
+  updateModalStatus.hidden = false
 })
 
 window.saga.appVersion().then((v) => {
   $('#help-version').textContent = v || '未知'
 }).catch(() => {})
+
+/* 启动后自动检查一次：避开正在输入和已经打开的弹窗 */
+let autoUpdateDone = false
+let lastInputAt = Date.now()
+document.addEventListener('input', () => { lastInputAt = Date.now() }, true)
+
+function tryAutoUpdateCheck () {
+  if (autoUpdateDone) return
+  const modalOpen = !!document.querySelector('.modal:not([hidden])')
+  if (modalOpen || Date.now() - lastInputAt < 2500) {
+    setTimeout(tryAutoUpdateCheck, 3000)
+    return
+  }
+  autoUpdateDone = true
+  checkForUpdates({ quiet: true })
+}
+setTimeout(tryAutoUpdateCheck, 6000)
 
 /* ---------- 使用引导 ---------- */
 

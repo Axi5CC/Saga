@@ -276,18 +276,47 @@
         <h2 id="help-title">帮助</h2>
         <button class="modal-x" type="button" data-close="help" title="关闭">×</button>
       </div>
-      <div class="modal-body">
-        <p class="modal-note">遇到问题、发现错误，或者想提一个新功能，都可以告诉作者。</p>
-        <p class="modal-label">版本与更新</p>
-        <p class="modal-note">当前版本：<span id="help-version">—</span></p>
-        <p id="help-update-status" class="modal-note" hidden></p>
-        <button id="help-update-btn" class="ghost-btn" type="button">检查更新</button>
-        <p class="modal-label">问题反馈</p>
-        <p class="modal-note">GitHub：https://github.com/Axi5CC/Saga<br>邮箱：396673164@qq.com</p>
+      <div class="modal-body help-body">
+        <section class="help-section">
+          <div class="help-head">
+            <h3 class="help-heading">版本与更新</h3>
+            <span class="help-version">当前 <b id="help-version">—</b></span>
+          </div>
+          <p id="help-update-status" class="help-status" hidden></p>
+        </section>
+        <section class="help-section">
+          <h3 class="help-heading">问题反馈</h3>
+          <div class="help-row">
+            <span class="help-key">GitHub</span>
+            <span class="help-value">https://github.com/Axi5CC/Saga</span>
+          </div>
+          <div class="help-row">
+            <span class="help-key">邮箱</span>
+            <span class="help-value">396673164@qq.com</span>
+            <button id="help-copy-mail" class="help-copy" type="button">复制</button>
+          </div>
+        </section>
       </div>
       <div class="modal-foot">
         <button class="ghost-btn" type="button" data-close="help">关闭</button>
-        <button id="help-copy-mail" class="ghost-btn" type="button">复制邮箱</button>
+        <button id="help-update-btn" class="primary" type="button">检查更新</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="update-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="update-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="update-title">发现新版本</h2>
+        <button class="modal-x" type="button" data-close="update" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="update-text" class="update-lead"></p>
+        <p id="update-status" class="update-status" hidden></p>
+      </div>
+      <div class="modal-foot">
+        <button class="ghost-btn" type="button" data-close="update">稍后</button>
+        <button id="update-action" class="primary" type="button">下载并安装</button>
       </div>
     </div>
   </div>

@@ -1095,6 +1095,82 @@ html[data-theme="light"] #zoom .bar-btn:not(:disabled):active { color: #000; bac
 
 .guide-card { width: min(580px, calc(100vw - 48px)); }
 
+/* help: two quiet sections, the one action lives in the footer */
+.help-body { padding-top: 8px; }
+.help-section + .help-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #2c2c2c;
+}
+.help-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.help-heading {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  color: #ddd;
+}
+.help-version { color: var(--muted); font-size: 11.5px; }
+.help-version b { color: #ddd; font-weight: 600; }
+.help-status {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.help-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.help-key {
+  flex: 0 0 46px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+.help-value {
+  flex: 1;
+  min-width: 0;
+  color: #ddd;
+  line-height: 1.5;
+  word-break: break-all;
+  user-select: text;
+}
+.help-copy {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 1px solid #3a3a3a;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.help-copy:hover { border-color: var(--accent); color: var(--accent); }
+.modal-foot .primary:disabled { opacity: .55; cursor: default; }
+.update-lead {
+  color: #ddd;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.update-status {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+html[data-theme="light"] .help-section + .help-section { border-top-color: #e6e2da; }
+html[data-theme="light"] .help-heading,
+html[data-theme="light"] .help-version b,
+html[data-theme="light"] .help-value,
+html[data-theme="light"] .update-lead { color: #2b2926; }
+html[data-theme="light"] .help-copy { border-color: #d8d2c8; }
+
 .guide-body { min-height: 250px; padding-top: 2px; }
 
 .guide-step-no {
