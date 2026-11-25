@@ -1,7 +1,7 @@
 {
   "name": "saga",
   "productName": "Saga",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Saga — a local writing app for books: create a template book folder, write, then export.",
   "author": "Axi5CC",
   "license": "MIT",
@@ -13,10 +13,14 @@
   "private": true,
   "scripts": {
     "start": "electron .",
+    "dist:win": "node scripts/build-win.js",
     "saga": "node ai/cli.js",
     "mcp": "node ai/mcp-server.js"
   },
   "devDependencies": {
-    "electron": "^43.0.0"
+    "@electron/fuses": "2.0.0",
+    "electron": "^43.0.0",
+    "electron-builder": "26.18.0",
+    "javascript-obfuscator": "4.1.1"
   }
 }

@@ -489,6 +489,7 @@
             <span class="help-version">当前 <b id="help-version">—</b></span>
           </div>
           <p id="help-update-status" class="help-status" hidden></p>
+          <p class="help-note">更新从 GitHub 下载。如果检查或下载很慢、失败，请先打开代理再重试。</p>
         </section>
         <section class="help-section">
           <h3 class="help-heading">问题反馈</h3>
@@ -519,9 +520,11 @@
       <div class="modal-body">
         <p id="update-text" class="update-lead"></p>
         <p id="update-status" class="update-status" hidden></p>
+        <p class="update-note">更新文件从 GitHub 下载。下载很慢或失败时，请打开代理后重试。</p>
       </div>
       <div class="modal-foot">
         <button class="ghost-btn" type="button" data-close="update">稍后</button>
+        <button id="update-cancel" class="ghost-btn" type="button" hidden>取消下载</button>
         <button id="update-action" class="primary" type="button">下载并安装</button>
       </div>
     </div>

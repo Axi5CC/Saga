@@ -1787,6 +1787,7 @@ $('#help-copy-mail').addEventListener('click', async () => {
 const updateBtn = $('#help-update-btn')
 const updateStatus = $('#help-update-status')
 const updateAction = $('#update-action')
+const updateCancel = $('#update-cancel')
 const updateModalStatus = $('#update-status')
 const updateText = $('#update-text')
 let updatePhase = 'idle'
@@ -1820,6 +1821,8 @@ function setUpdateState (phase, status) {
   updateStatus.hidden = !status
   updateAction.textContent = ACTION_LABEL[phase] || '下载并安装'
   updateAction.disabled = phase === 'checking' || phase === 'downloading' || phase === 'installing'
+  updateCancel.hidden = phase !== 'downloading'
+  updateCancel.disabled = phase !== 'downloading'
   updateModalStatus.textContent = status || ''
   updateModalStatus.hidden = !status
 }
@@ -1836,7 +1839,13 @@ async function downloadUpdate () {
   setUpdateState('downloading', `正在下载 ${updateInfo.latest}… 0%`)
   try {
     const r = await window.saga.updateDownload()
-    if (!r || !r.ok) throw new Error((r && r.error) || '下载失败')
+    if (!r || !r.ok) {
+      if (r && r.canceled) {
+        setUpdateState('available', '已取消下载')
+        return
+      }
+      throw new Error((r && r.error) || '下载失败')
+    }
     if (r.portable) {
       setUpdateState('portable', '新版已下载到「下载」文件夹。关闭 Saga 后替换当前便携版。')
     } else {
@@ -1897,6 +1906,12 @@ updateAction.addEventListener('click', () => {
   if (updatePhase === 'available') return downloadUpdate()
   if (updatePhase === 'downloaded' || updatePhase === 'portable') return installUpdate()
   if (updatePhase === 'error') return checkForUpdates()
+})
+
+updateCancel.addEventListener('click', async () => {
+  updateCancel.disabled = true
+  try { await window.saga.updateCancel() } catch {}
+  updateCancel.disabled = false
 })
 
 window.saga.onUpdateProgress((p) => {

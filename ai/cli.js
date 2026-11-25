@@ -12,7 +12,7 @@ const core = require('./book-core')
 const { openInSaga } = require('./launcher')
 const { exportBook } = require('./export-book')
 
-const VERSION = '1.4.0'
+const VERSION = '1.4.1'
 
 class UsageError extends Error {}
 

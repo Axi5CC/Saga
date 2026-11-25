@@ -16,7 +16,7 @@ const core = require('./book-core')
 const { exportBook } = require('./export-book')
 const { openInSaga } = require('./launcher')
 
-const VERSION = '1.4.0'
+const VERSION = '1.4.1'
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
 
 const bookArg = {

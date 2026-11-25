@@ -1,0 +1,47 @@
+appId: com.axi5cc.saga
+productName: Saga
+copyright: Copyright © 2026 Axi5CC
+electronVersion: 43.8.12
+npmRebuild: false
+buildDependenciesFromSource: false
+asar: true
+asarUnpack:
+  - fonts/**/*.woff2
+files:
+  - "**/*"
+  - "!dist/**"
+  - "!node_modules/**"
+  - "!electron-builder.yml"
+  - "!afterPack.js"
+  - "!package-lock.json"
+extraResources:
+  - from: ai
+    to: ai
+  - from: example
+    to: example
+directories:
+  output: dist
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  icon: saga.ico
+  signtoolOptions:
+    signingHashAlgorithms:
+      - sha256
+nsis:
+  artifactName: Saga-Setup-${version}.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Saga
+  installerIcon: saga.ico
+  uninstallerIcon: saga.ico
+  runAfterFinish: true
+portable:
+  artifactName: Saga-Portable-${version}.${ext}
+afterPack: ./afterPack.js

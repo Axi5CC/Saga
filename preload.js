@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('saga', {
   appVersion: () => ipcRenderer.invoke('app:version'),
   updateCheck: () => ipcRenderer.invoke('update:check'),
   updateDownload: () => ipcRenderer.invoke('update:download'),
+  updateCancel: () => ipcRenderer.invoke('update:cancel'),
   updateInstall: () => ipcRenderer.invoke('update:install'),
   onUpdateProgress: (fn) => ipcRenderer.on('update:progress', (_e, p) => fn(p)),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', String(text == null ? '' : text)),

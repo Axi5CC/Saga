@@ -39,7 +39,22 @@ Saga 只认识这样的文件夹。EPUB、PDF、TXT 是导出后的成品，不�
 
 ## 下载
 
-安装包（`Saga-Setup-*.exe`）和便携版（`Saga-Portable-*.exe`）放在本仓库的 **Releases** 页面，当前版本 **1.4.0**。
+安装包（`Saga-Setup-*.exe`）和便携版（`Saga-Portable-*.exe`）放在本仓库的 **Releases** 页面，当前版本 **1.4.1**。
+
+自动更新从 GitHub 下载。国内网络如果检查或下载很慢、失败，请先打开代理再重试。
+
+Saga 正在申请 [SignPath Foundation](https://signpath.org/) 的免费开源代码签名。通过后，发布包由 SignPath Foundation 提供 Windows 代码签名。
+
+## 代码签名
+
+Saga 正在申请 [SignPath Foundation](https://signpath.org/) 的免费开源代码签名。通过后，发布包由 SignPath Foundation 签名，Windows 不再提示“未知发布者”。
+
+在审核通过前，或者自己从源码打包时，需要一份 Windows 代码签名证书。打包前设置：
+
+- `CSC_LINK`：`.pfx` 文件路径（也可以是 base64 或链接）
+- `CSC_KEY_PASSWORD`：证书密码
+
+electron-builder 会同时签名 `Saga.exe` 和 `Saga-Setup-*.exe`。证书需包含 Code Signing EKU。没有证书时仍可打包，但 Windows SmartScreen 会提示“未知发布者”。
 
 便携版可以直接运行，但 AI 接入（CLI / MCP）需要安装版，因为便携版每次从临时目录启动。
 
@@ -51,6 +66,19 @@ Saga 只认识这样的文件夹。EPUB、PDF、TXT 是导出后的成品，不�
 npm install
 npm start
 ```
+
+## 构建 Windows 安装包
+
+需要 Node.js 22.12 或更新版本（`@electron/fuses` 的要求）。
+
+```bash
+npm install
+npm run dist:win
+```
+
+产物在 `build/app/dist/`：`Saga-Setup-<版本>.exe` 和 `Saga-Portable-<版本>.exe`。构建脚本会把运行所需的文件复制到 `build/app/`，混淆 JavaScript，再由 electron-builder 打包；源码目录不会被改动。
+
+GitHub Actions 工作流 `.github/workflows/windows-build.yml` 在 `windows-latest` 上执行同样的构建，并把安装包上传为 artifact。配置 SignPath 的 secrets 和 variables 后，同一个工作流会把安装包提交给 SignPath Foundation 签名。
 
 ## 使用
 
@@ -101,6 +129,16 @@ saga.cmd export "<书文件夹>" --format manuscript-pdf --out "<投稿稿.pdf>"
 | `ai/` | 书稿读写核心、CLI、MCP 服务与导出构建器 |
 | `ai/manuscript.js` | 标准投稿稿：标题页、页眉、DOCX 与 PDF 的排版模型 |
 | `print/` | 投稿稿 PDF 用的 Paged.js（MIT，许可见 `LICENSE-pagedjs.txt`） |
+
+## 隐私
+
+Saga 是本地优先的写作工具：书稿、书名、批注和设置都保存在你自己的文件夹里，不上传到任何服务器。
+
+- 没有账号、云同步、遥测或使用统计，也不包含广告或分析 SDK。
+- 只有检查更新时，Saga 会请求 `https://api.github.com/repos/Axi5CC/Saga/releases/latest`；下载更新时访问 GitHub 的发布文件地址。请求只包含当前版本，不包含书稿内容。
+- 「帮助」里的 GitHub 链接和反馈邮箱由系统浏览器或邮件客户端打开。
+- CLI 和 MCP 在本机运行，只读写你指定的书稿文件夹；Saga 本身不向 AI 服务发送数据。
+- 打开书稿、导入失败等本地记录写在系统的应用数据目录（`saga.log`），不会上传。
 
 ## 字体许可
 

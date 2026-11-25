@@ -1,0 +1,75 @@
+name: Windows build
+
+# Builds the Windows installers on GitHub-hosted runners. Once the SignPath
+# Foundation application is approved and the SIGNPATH_* variables are set,
+# the sign job submits the same artifact for Authenticode signing.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build:
+    name: Build installers
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows installers
+        run: npm run dist:win
+
+      - name: Upload unsigned installers
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: saga-windows-unsigned
+          path: |
+            build/app/dist/Saga-Setup-*.exe
+            build/app/dist/Saga-Portable-*.exe
+          if-no-files-found: error
+
+  # Skipped until SignPath approval: set SIGNPATH_PROJECT_SLUG (and the other
+  # SIGNPATH_* variables) in the repository settings to enable signing.
+  sign:
+    name: Sign installers with SignPath
+    needs: build
+    if: ${{ vars.SIGNPATH_PROJECT_SLUG != '' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Submit signing request
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ needs.build.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: signed
+
+      - name: Upload signed installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: saga-windows-signed
+          path: signed/*.exe
+          if-no-files-found: error

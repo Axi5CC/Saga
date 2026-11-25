@@ -1122,6 +1122,12 @@ html[data-theme="light"] #zoom .bar-btn:not(:disabled):active { color: #000; bac
   font-size: 12px;
   line-height: 1.6;
 }
+.help-note {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
 .help-row {
   display: flex;
   align-items: center;
@@ -1162,6 +1168,12 @@ html[data-theme="light"] #zoom .bar-btn:not(:disabled):active { color: #000; bac
   margin-top: 8px;
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.6;
+}
+.update-note {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11.5px;
   line-height: 1.6;
 }
 html[data-theme="light"] .help-section + .help-section { border-top-color: #e6e2da; }

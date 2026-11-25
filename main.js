@@ -981,13 +981,21 @@ ipcMain.handle('app:theme', async (_e, theme) => {
 /* ---------- 检查更新 ---------- */
 
 const UPDATE_API = 'https://api.github.com/repos/Axi5CC/Saga/releases/latest'
+const UPDATE_CHECK_TIMEOUT = 20000
+const UPDATE_IDLE_TIMEOUT = 30000
+const UPDATE_TOTAL_TIMEOUT = 15 * 60 * 1000
 let pendingUpdate = null
 let downloadedUpdate = null
+let updateAbort = null
 
 function updateErrorText (err) {
   const text = err && err.message ? err.message : String(err)
+  if (/GitHub 返回 403/.test(text)) return 'GitHub 请求过于频繁，请稍后再试'
+  if (/GitHub 返回 404/.test(text)) return '没有找到发布版本'
+  if (/下载超时/.test(text)) return '下载超时，请检查网络或打开代理后重试'
+  if (/连接 GitHub 超时|超时/.test(text)) return '连接 GitHub 超时，请打开代理后重试'
   if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ERR_TIMED_OUT|ERR_CONNECTION|net::/i.test(text)) {
-    return '无法连接 GitHub，请检查网络或代理'
+    return '无法连接 GitHub，请检查网络或打开代理后重试'
   }
   return text
 }
@@ -1010,21 +1018,35 @@ function isNewerVersion (a, b) {
 function githubJSON (url) {
   return new Promise((resolve, reject) => {
     const req = net.request({ url, redirect: 'follow' })
+    let done = false
+    const finish = (err, data) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      if (err) reject(err)
+      else resolve(data)
+    }
+    const timer = setTimeout(() => {
+      finish(new Error('连接 GitHub 超时'))
+      try { req.abort() } catch {}
+    }, UPDATE_CHECK_TIMEOUT)
     req.setHeader('Accept', 'application/vnd.github+json')
     req.setHeader('User-Agent', 'Saga/' + app.getVersion())
     let body = ''
     req.on('response', (res) => {
       if (res.statusCode !== 200) {
         res.resume()
-        reject(new Error('GitHub 返回 ' + res.statusCode))
+        finish(new Error('GitHub 返回 ' + res.statusCode))
         return
       }
       res.on('data', (chunk) => { body += chunk })
+      res.on('error', (err) => finish(err))
       res.on('end', () => {
-        try { resolve(JSON.parse(body)) } catch { reject(new Error('无法读取更新信息')) }
+        try { finish(null, JSON.parse(body)) } catch { finish(new Error('无法读取更新信息')) }
       })
     })
-    req.on('error', reject)
+    req.on('error', (err) => finish(err))
+    req.on('abort', () => finish(new Error('检查更新已取消')))
     req.end()
   })
 }
@@ -1060,14 +1082,25 @@ ipcMain.handle('update:check', async () => {
 ipcMain.handle('update:download', async () => {
   if (!pendingUpdate) return { ok: false, error: '请先检查更新' }
   const { asset, portable, version } = pendingUpdate
-  let target
+  let target = null
+  let apiAsset = false
   try {
-    target = new URL(asset.browser_download_url)
-  } catch {
-    return { ok: false, error: '下载地址不合法' }
-  }
-  if (target.protocol !== 'https:' || target.hostname !== 'github.com') {
-    return { ok: false, error: '下载地址不合法' }
+    const api = typeof asset.url === 'string' ? new URL(asset.url) : null
+    if (api && api.protocol === 'https:' && api.hostname === 'api.github.com') {
+      target = api
+      apiAsset = true
+    }
+  } catch {}
+  if (!target) {
+    try {
+      const web = new URL(asset.browser_download_url)
+      if (web.protocol !== 'https:' || web.hostname !== 'github.com') {
+        return { ok: false, error: '下载地址不合法' }
+      }
+      target = web
+    } catch {
+      return { ok: false, error: '下载地址不合法' }
+    }
   }
   const dir = portable ? app.getPath('downloads') : path.join(app.getPath('temp'), 'Saga-Update')
   fs.mkdirSync(dir, { recursive: true })
@@ -1076,30 +1109,69 @@ ipcMain.handle('update:download', async () => {
   try { fs.unlinkSync(part) } catch {}
   let received = 0
   const hash = crypto.createHash('sha256')
+  updateAbort = null
   try {
     await new Promise((resolve, reject) => {
-      const req = net.request({ url: target.toString(), redirect: 'follow' })
+      let done = false
+      let idle = null
+      let total = null
+      let out = null
+      let req = null
+      const finish = (err) => {
+        if (done) return
+        done = true
+        clearTimeout(idle)
+        clearTimeout(total)
+        updateAbort = null
+        if (err) {
+          try { if (out) out.destroy() } catch {}
+          try { if (req) req.abort() } catch {}
+          reject(err)
+        } else {
+          resolve()
+        }
+      }
+      const bumpIdle = () => {
+        clearTimeout(idle)
+        idle = setTimeout(() => finish(new Error('下载超时，请检查网络后重试')), UPDATE_IDLE_TIMEOUT)
+      }
+      total = setTimeout(() => finish(new Error('下载超时，请检查网络后重试')), UPDATE_TOTAL_TIMEOUT)
+      try {
+        req = net.request({ url: target.toString(), redirect: 'follow' })
+      } catch (err) {
+        finish(err)
+        return
+      }
+      updateAbort = () => {
+        const err = new Error('更新下载已取消')
+        err.canceled = true
+        finish(err)
+      }
       req.setHeader('User-Agent', 'Saga/' + app.getVersion())
+      if (apiAsset) req.setHeader('Accept', 'application/octet-stream')
+      bumpIdle()
       req.on('response', (res) => {
         if (res.statusCode !== 200) {
           res.resume()
-          reject(new Error('下载失败：HTTP ' + res.statusCode))
+          finish(new Error('下载失败：HTTP ' + res.statusCode))
           return
         }
-        const out = fs.createWriteStream(part)
+        bumpIdle()
+        out = fs.createWriteStream(part)
         res.on('data', (chunk) => {
           received += chunk.length
           hash.update(chunk)
+          bumpIdle()
           if (win && !win.isDestroyed()) {
             win.webContents.send('update:progress', { received, total: asset.size || 0 })
           }
         })
+        res.on('error', (err) => finish(err))
         res.pipe(out)
-        out.on('finish', resolve)
-        out.on('error', reject)
-        res.on('error', reject)
+        out.on('finish', () => finish(null))
+        out.on('error', (err) => finish(err))
       })
-      req.on('error', reject)
+      req.on('error', (err) => finish(err))
       req.end()
     })
     const size = fs.statSync(part).size
@@ -1114,8 +1186,15 @@ ipcMain.handle('update:download', async () => {
     return { ok: true, path: dest, portable, version }
   } catch (err) {
     try { fs.unlinkSync(part) } catch {}
+    if (err && err.canceled) return { ok: false, canceled: true, error: '已取消下载' }
     return { ok: false, error: updateErrorText(err) }
   }
+})
+
+ipcMain.handle('update:cancel', () => {
+  if (!updateAbort) return { ok: false, error: '没有正在下载的更新' }
+  updateAbort()
+  return { ok: true }
 })
 
 ipcMain.handle('update:install', async () => {
