@@ -125,10 +125,19 @@ const state = {
   name: '',
   meta: null,
   chapters: {},
+  comments: [],
   currentId: null,
   dirty: new Set(),
   saveTimer: null
 }
+
+// 批注: the anchor is a quote plus its place in the chapter's text, never
+// markup in the chapter file.  Ranges are rebuilt from the words each time.
+let commentSelection = null
+let commentSaveTimer = null
+let commentsDirty = false
+const commentRanges = new Map()
+let activeCommentId = null
 
 // a jump across a long book goes at once, not through every chapter between;
 // a short one slides, and the picked chapter stays current until it lands
@@ -467,6 +476,7 @@ function syncStructure () {
   revealCurrent()
   updateStats()
   queueProgress()
+  renderComments()
 }
 
 async function addChapter (kind, beforeId) {
@@ -860,6 +870,8 @@ function buildChapter (id) {
       refreshNav(id)
       updateStats()
       scheduleSave()
+      scheduleCommentRender()
+      if (!$('#find-bar').hidden) scheduleFindRefresh()
     })
     body.addEventListener('focus', () => {
       state.currentId = id
@@ -892,6 +904,7 @@ function finishManuscript () {
   buildToken++
   appendChapters(buildIds.slice(builtCount))
   builtCount = buildIds.length
+  renderComments()
 }
 
 function jumpTo (top, id) {
@@ -1003,7 +1016,297 @@ const flush = async () => {
   savePosition()
   if (state.dirty.size) await saveDirty()
   if (dirtyTitles.size) await flushTitles()
+  if (commentsDirty) await saveCommentsNow()
 }
+
+/* ---------- 全文查找替换 ---------- */
+
+let findMatches = []
+let findIndex = -1
+let findRefreshTimer = null
+
+function scheduleFindRefresh () {
+  clearTimeout(findRefreshTimer)
+  findRefreshTimer = setTimeout(() => {
+    if (!$('#find-bar').hidden) refreshFind()
+  }, 350)
+}
+
+function findInBodies () {
+  const all = $('#find-scope-all').checked
+  if (all) {
+    finishManuscript()
+    return [...$$('#chapters .chapter-body')].filter((body) => body.isContentEditable)
+  }
+  let id = state.currentId
+  if (!id || !document.querySelector(`.chapter-body[data-id="${id}"]`)) {
+    const order = (state.meta && state.meta.chapterOrder) || []
+    id = order.find((chId) => kindOf(chId) === 'chapter' &&
+      String(state.chapters[chId] || '').replace(/<[^>]*>/g, '').trim()) ||
+      order.find((chId) => STORY.has(kindOf(chId)))
+  }
+  if (!id) return []
+  let body = document.querySelector(`.chapter-body[data-id="${id}"]`)
+  if (!body) {
+    finishManuscript()
+    body = document.querySelector(`.chapter-body[data-id="${id}"]`)
+  }
+  if (body && body.isContentEditable) return [body]
+  // the contents sheet is generated, not written; search the first chapter
+  const order = (state.meta && state.meta.chapterOrder) || []
+  const alt = order.find((chId) => kindOf(chId) === 'chapter' &&
+    String(state.chapters[chId] || '').replace(/<[^>]*>/g, '').trim())
+  if (!alt) return []
+  const altBody = document.querySelector(`.chapter-body[data-id="${alt}"]`)
+  return altBody && altBody.isContentEditable ? [altBody] : []
+}
+
+function matchesInBody (body, needle, caseSensitive) {
+  const out = []
+  if (!needle) return out
+  const low = caseSensitive ? needle : needle.toLowerCase()
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
+  let node
+  while ((node = walker.nextNode())) {
+    const text = node.nodeValue || ''
+    if (!text) continue
+    const hay = caseSensitive ? text : text.toLowerCase()
+    let from = 0
+    while (from <= hay.length - low.length) {
+      const at = hay.indexOf(low, from)
+      if (at < 0) break
+      if (at + needle.length <= text.length) {
+        const range = document.createRange()
+        range.setStart(node, at)
+        range.setEnd(node, at + needle.length)
+        out.push({ body, range })
+      }
+      from = at + Math.max(needle.length, 1)
+    }
+  }
+  return out
+}
+
+function paintFind () {
+  if (!window.CSS || !CSS.highlights) return
+  const all = new Highlight()
+  const current = new Highlight()
+  findMatches.forEach((match, i) => {
+    if (i === findIndex) current.add(match.range)
+    else all.add(match.range)
+  })
+  if (all.size) CSS.highlights.set('saga-find', all)
+  else CSS.highlights.delete('saga-find')
+  if (current.size) CSS.highlights.set('saga-find-current', current)
+  else CSS.highlights.delete('saga-find-current')
+}
+
+function updateFindCount () {
+  const el = $('#find-count')
+  if (!el) return
+  el.textContent = findMatches.length ? (findIndex + 1) + ' / ' + findMatches.length : '0 / 0'
+}
+
+function showFindAt (index) {
+  if (!findMatches.length) { findIndex = -1; paintFind(); updateFindCount(); return }
+  findIndex = ((index % findMatches.length) + findMatches.length) % findMatches.length
+  paintFind()
+  updateFindCount()
+  const match = findMatches[findIndex]
+  const rect = match.range.getBoundingClientRect()
+  if (!rect || (!rect.width && !rect.height)) return
+  const stage = $('#stage')
+  const top = stage.scrollTop + rect.top - stage.getBoundingClientRect().top - stage.clientHeight / 3
+  stage.scrollTo({ top: Math.max(0, top), behavior: 'auto' })
+  state.currentId = match.body.dataset.id
+  markCurrent(state.currentId)
+  updateStats()
+}
+
+function refreshFind () {
+  clearTimeout(findRefreshTimer)
+  const needle = $('#find-input').value
+  const caseSensitive = $('#find-case').checked
+  findMatches = []
+  findIndex = -1
+  if (needle) {
+    for (const body of findInBodies()) {
+      for (const match of matchesInBody(body, needle, caseSensitive)) findMatches.push(match)
+    }
+  }
+  if (findMatches.length) showFindAt(0)
+  else { paintFind(); updateFindCount() }
+}
+
+function findStep (delta) {
+  if (!findMatches.length) refreshFind()
+  if (!findMatches.length) return
+  showFindAt(findIndex + delta)
+}
+
+function replaceInBody (body, needle, replacement, caseSensitive) {
+  const low = caseSensitive ? needle : needle.toLowerCase()
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
+  let node
+  let count = 0
+  while ((node = walker.nextNode())) {
+    const text = node.nodeValue || ''
+    if (!text) continue
+    const hay = caseSensitive ? text : text.toLowerCase()
+    let out = ''
+    let from = 0
+    let at
+    while ((at = hay.indexOf(low, from)) >= 0) {
+      out += text.slice(from, at) + replacement
+      from = at + needle.length
+      count++
+    }
+    if (from) node.nodeValue = out + text.slice(from)
+  }
+  return count
+}
+
+function replaceCurrent () {
+  if (!findMatches.length) { refreshFind(); return }
+  const match = findMatches[findIndex]
+  if (!match) return
+  const replacement = $('#find-replace-input').value
+  const body = match.body
+  const at = findIndex
+  match.range.deleteContents()
+  if (replacement) match.range.insertNode(document.createTextNode(replacement))
+  body.normalize()
+  body.dispatchEvent(new Event('input', { bubbles: true }))
+  refreshFind()
+  if (findMatches.length) showFindAt(Math.min(at, findMatches.length - 1))
+}
+
+async function replaceAllFind () {
+  const needle = $('#find-input').value
+  if (!needle) { toast('先输入要查找的文字'); return }
+  const replacement = $('#find-replace-input').value
+  const caseSensitive = $('#find-case').checked
+  const btn = $('#find-replace-all')
+  btn.disabled = true
+  try {
+    // the backup on disk should hold what the writer sees, including edits
+    // still waiting for their debounce
+    await flush()
+    const plans = []
+    for (const body of findInBodies()) {
+      const count = replaceInBodyCount(body, needle, caseSensitive)
+      if (count) plans.push({ body, id: body.dataset.id, count })
+    }
+    if (!plans.length) { toast('没有找到「' + needle + '」'); return }
+    // a bulk rewrite is recoverable: every chapter it touches waits in darlings/
+    let backedUp = 0
+    for (const plan of plans) {
+      const name = await window.saga.backupChapter(plan.id, 'before-replace')
+      if (name) backedUp++
+    }
+    let total = 0
+    const previous = state.currentId
+    for (const plan of plans) {
+      total += replaceInBody(plan.body, needle, replacement, caseSensitive)
+      plan.body.normalize()
+      markFirstParagraph(plan.body)
+      updateGhost(plan.body)
+      state.dirty.add(plan.id)
+      wordCache.delete(plan.id)
+      textCache.delete(plan.id)
+      refreshNav(plan.id)
+    }
+    state.currentId = previous
+    markCurrent(previous)
+    updateStats()
+    scheduleSave()
+    scheduleCommentRender()
+    refreshFind()
+    toast('已替换 ' + total + ' 处' + (backedUp ? '，原文已备份到 darlings/' : ''), 3600)
+  } catch (err) {
+    toast('替换失败：' + cleanError(err))
+  } finally {
+    btn.disabled = false
+  }
+}
+
+// a count without making ranges, so the backup pass does not disturb the page
+function replaceInBodyCount (body, needle, caseSensitive) {
+  const low = caseSensitive ? needle : needle.toLowerCase()
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
+  let node
+  let count = 0
+  while ((node = walker.nextNode())) {
+    const text = node.nodeValue || ''
+    if (!text) continue
+    const hay = caseSensitive ? text : text.toLowerCase()
+    let from = 0
+    let at
+    while ((at = hay.indexOf(low, from)) >= 0) {
+      count++
+      from = at + needle.length
+    }
+  }
+  return count
+}
+
+function openFind () {
+  if (!state.meta) return
+  if (document.querySelector('.modal:not([hidden])')) return
+  const bar = $('#find-bar')
+  bar.hidden = false
+  const sel = window.getSelection()
+  let picked = ''
+  if (sel && !sel.isCollapsed && sel.rangeCount) {
+    const node = sel.getRangeAt(0).startContainer
+    const el = node.nodeType === 1 ? node : node.parentElement
+    if (el && el.closest && el.closest('.chapter-body')) picked = sel.toString()
+  }
+  const input = $('#find-input')
+  if (picked && !picked.includes('\n') && picked.length <= 200) input.value = picked
+  input.focus()
+  input.select()
+  refreshFind()
+}
+
+function closeFind () {
+  const bar = $('#find-bar')
+  if (!bar || bar.hidden) return
+  bar.hidden = true
+  findMatches = []
+  findIndex = -1
+  paintFind()
+  updateFindCount()
+}
+
+$('#find-input').addEventListener('input', refreshFind)
+$('#find-case').addEventListener('change', refreshFind)
+$('#find-scope-all').addEventListener('change', refreshFind)
+$('#find-prev').addEventListener('click', () => findStep(-1))
+$('#find-next').addEventListener('click', () => findStep(1))
+$('#find-replace-one').addEventListener('click', replaceCurrent)
+$('#find-replace-all').addEventListener('click', replaceAllFind)
+$('#find-close').addEventListener('click', closeFind)
+$('#find-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    findStep(e.shiftKey ? -1 : 1)
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    e.stopPropagation()
+    closeFind()
+  }
+})
+$('#find-replace-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    replaceCurrent()
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    e.stopPropagation()
+    closeFind()
+  }
+})
 
 /* ---------- the day's numbers ---------- */
 
@@ -1080,6 +1383,7 @@ function applyZoom (value) {
   $('#zoom-out').disabled = n <= ZOOM_MIN
   $('#zoom-in').disabled = n >= ZOOM_MAX
   queueProgress()
+  positionCommentMarks()
 }
 
 /* ---------- where the writer was ---------- */
@@ -1261,12 +1565,19 @@ async function showEditor (data) {
   state.name = data.name
   state.meta = data.meta
   state.chapters = data.chapters
+  state.comments = Array.isArray(data.comments) ? data.comments : []
   state.currentId = null
   state.dirty = new Set()
+  commentsDirty = false
+  commentSelection = null
+  activeCommentId = null
+  hideCommentPop()
+  $('#sel-tools').hidden = true
   jumpTop = null
   closePopmenu()
   navQuery = ''
   $('#nav-search-input').value = ''
+  closeFind()
   const savedEl = $('#stat-saved')
   savedEl.classList.remove('on')
   savedEl.textContent = ''
@@ -1284,6 +1595,9 @@ async function showEditor (data) {
   $('#welcome').hidden = true
   $('#editor').hidden = false
   $('#export-btn').hidden = false
+  $('#meta-btn').hidden = false
+  $('#comments-btn').hidden = false
+  updateCommentCount()
   // the paper opens at the size it was last read in
   applyZoom(zoomValue())
 
@@ -1296,6 +1610,7 @@ async function showEditor (data) {
   const firstCount = heavy ? Math.min(BUILD_CHUNK, buildIds.length) : buildIds.length
   appendChapters(buildIds.slice(0, firstCount))
   builtCount = firstCount
+  renderComments()
 
   markCurrent(null)
   $('#stage').scrollTop = 0
@@ -1319,6 +1634,7 @@ async function showEditor (data) {
       const nextCount = Math.min(buildIds.length, builtCount + BUILD_CHUNK)
       appendChapters(buildIds.slice(builtCount, nextCount))
       builtCount = nextCount
+      renderComments()
       if (builtCount < buildIds.length) requestAnimationFrame(grow)
     }
     requestAnimationFrame(grow)
@@ -1406,15 +1722,25 @@ $('#back-btn').addEventListener('click', async () => {
   state.name = ''
   state.meta = null
   state.chapters = {}
+  state.comments = []
   state.currentId = null
   state.dirty.clear()
   dirtyTitles.clear()
+  commentsDirty = false
+  commentSelection = null
+  activeCommentId = null
   wordCache.clear()
   textCache.clear()
   document.title = 'Saga'
   closePopmenu()
   clearNavSearch()
+  hideCommentPop()
+  $('#sel-tools').hidden = true
+  $('#comment-marks').textContent = ''
+  if (window.CSS && CSS.highlights) CSS.highlights.delete('saga-comment')
   $('#export-btn').hidden = true
+  $('#meta-btn').hidden = true
+  $('#comments-btn').hidden = true
   $('#editor').hidden = true
   $('#welcome').hidden = false
   showRecents()
@@ -1611,7 +1937,7 @@ const GUIDE_SEEN = 'saga.guide.seen'
 const GUIDE_STEPS = [
   {
     title: '这是书稿，不是成品电子书',
-    body: '<p><b>Saga 是写作工具，不是阅读器。</b>它打开的是按模板创作的书稿文件夹，不是 EPUB、PDF、TXT 等成品电子书。</p><p>每一份书稿都是磁盘上的一个文件夹：<code>book.json</code> 记录书名和章节顺序，<code>chapters/</code> 里每一章是一个 HTML 文件。写完后再通过「导出」生成成品。</p>'
+    body: '<p><b>Saga 是写作工具，不是阅读器。</b>它打开的是按模板创作的书稿文件夹，不是 EPUB、PDF、TXT 等成品电子书。</p><p>每一份书稿都是磁盘上的一个文件夹：<code>book.json</code> 记录书名和章节顺序，<code>chapters/</code> 里每一章是一个 HTML 文件，<code>comments.json</code> 存批注。写完后再通过「导出」生成成品。</p>'
   },
   {
     title: '新建，或者打开已有的 Saga 书稿',
@@ -1619,15 +1945,15 @@ const GUIDE_STEPS = [
   },
   {
     title: '在纸上写，自动保存',
-    body: '<p>左边是目录，点一章就跳过去；直接在中间的纸上写。改动会自动保存，不需要按保存。</p><p>空白页上的浅灰提示只是编辑器提示，不会写进书稿。</p><p>删除章节会把文字移到书的 <code>darlings/</code> 文件夹；每次保存先写临时文件再替换，断电也不会写坏。</p>'
+    body: '<p>左边是目录，点一章就跳过去；直接在中间的纸上写。改动会自动保存，不需要按保存。</p><p>按 <code>Ctrl/⌘ + F</code> 可以在正文里查找替换，勾选「全书」会搜索整本书。</p><p>空白页上的浅灰提示只是编辑器提示，不会写进书稿。</p><p>删除章节会把文字移到书的 <code>darlings/</code> 文件夹；每次保存先写临时文件再替换，断电也不会写坏。</p>'
   },
   {
     title: '底栏与返回',
-    body: '<p>底栏显示阅读进度、今日字数和全书字数；<code>+</code> / <code>−</code> 调整字号缩放。</p><p>点「← 首页」回到首页，可以换一本书、新建，或者打开别的书稿。</p><p>「设置」里可以切换深色/浅色和正文字体。</p>'
+    body: '<p>底栏显示阅读进度、今日字数和全书字数；<code>+</code> / <code>−</code> 调整字号缩放。</p><p>点「← 首页」回到首页，可以换一本书、新建，或者打开别的书稿。</p><p>顶栏「书籍」改书名、作者、系列、语言、ISBN 和简介；「设置」切换深色/浅色和正文字体；选中正文文字可以添加批注。</p>'
   },
   {
     title: '写完再导出成品',
-    body: '<p>Saga 的主线是「新建书稿 → 写作 → 导出成品」。顶栏「导出」支持 TXT、Markdown、HTML、EPUB、DOCX、ODT、RTF、LaTeX、PDF 和 KDP 纸质书。</p><p>「AI」里可以复制 MCP / CLI 配置，让 Claude Desktop、Cursor、Trae 等 AI 客户端读写书稿。</p><p>「设置」切换深色/浅色和正文字体；「简介」里能看到书的文件结构，也能再次打开这份引导。</p>'
+    body: '<p>Saga 的主线是「新建书稿 → 写作 → 导出成品」。顶栏「导出」支持 TXT、Markdown、HTML、EPUB、DOCX、ODT、RTF、LaTeX、PDF、投稿稿和 KDP 纸质书。</p><p>「投稿稿」按标准投稿格式生成 DOCX 或 PDF：标题页、双倍行距、页眉页码。EPUB 会带上语言、ISBN、系列和无障碍信息。</p><p>「AI」里可以复制 MCP / CLI 配置，让 Claude Desktop、Cursor、Trae 等 AI 客户端读写书稿。</p><p>「设置」切换深色/浅色和正文字体；「简介」里能看到书的文件结构，也能再次打开这份引导。</p>'
   }
 ]
 
@@ -1738,6 +2064,736 @@ document.addEventListener('keydown', (e) => {
   }
 })
 
+/* ---------- 书籍信息 ---------- */
+
+async function loadCoverPreview () {
+  const img = $('#meta-cover-img')
+  const name = $('#meta-cover-name')
+  const clear = $('#meta-cover-clear')
+  img.hidden = true
+  img.removeAttribute('src')
+  name.textContent = '未选择'
+  clear.hidden = true
+  try {
+    const data = await window.saga.coverData()
+    if (!data || !data.url) return
+    img.src = data.url
+    img.hidden = false
+    name.textContent = data.name
+    clear.hidden = false
+  } catch {}
+}
+
+function fillMetaForm () {
+  const meta = state.meta || {}
+  $('#meta-title-input').value = meta.title || state.name || ''
+  $('#meta-subtitle').value = meta.subtitle || ''
+  $('#meta-author').value = meta.author || ''
+  $('#meta-series').value = meta.series || ''
+  $('#meta-series-index').value = meta.seriesIndex || ''
+  $('#meta-language').value = meta.language || 'zh-CN'
+  $('#meta-isbn').value = meta.isbn || ''
+  $('#meta-publisher').value = meta.publisher || ''
+  $('#meta-rights').value = meta.rights || ''
+  $('#meta-description').value = meta.description || ''
+  $('#meta-keywords').value = Array.isArray(meta.keywords) ? meta.keywords.join('，') : (meta.keywords || '')
+  $('#meta-error').hidden = true
+  loadCoverPreview()
+}
+
+async function saveMetaForm () {
+  if (!state.meta) return
+  const title = $('#meta-title-input').value.trim()
+  const error = $('#meta-error')
+  if (!title) {
+    error.textContent = '书名不能为空'
+    error.hidden = false
+    $('#meta-title-input').focus()
+    return
+  }
+  const btn = $('#meta-save')
+  btn.disabled = true
+  error.hidden = true
+  try {
+    const meta = await window.saga.writeMeta({
+      title,
+      subtitle: $('#meta-subtitle').value,
+      author: $('#meta-author').value,
+      series: $('#meta-series').value,
+      seriesIndex: $('#meta-series-index').value,
+      language: $('#meta-language').value,
+      isbn: $('#meta-isbn').value,
+      publisher: $('#meta-publisher').value,
+      rights: $('#meta-rights').value,
+      description: $('#meta-description').value,
+      keywords: $('#meta-keywords').value
+    })
+    state.meta = meta
+    $('#tp-title').textContent = meta.title || state.name
+    const subtitle = String(meta.subtitle || '').trim()
+    $('#tp-subtitle').textContent = subtitle
+    $('#tp-subtitle').hidden = !subtitle
+    $('#tp-author').textContent = meta.author || '佚名'
+    document.title = (meta.title || state.name) + ' — Saga'
+    closeModal('meta')
+    toast('书籍信息已保存')
+  } catch (err) {
+    error.textContent = '保存失败：' + cleanError(err)
+    error.hidden = false
+  } finally {
+    btn.disabled = false
+  }
+}
+
+$('#meta-btn').addEventListener('click', fillMetaForm)
+$('#meta-save').addEventListener('click', saveMetaForm)
+$('#meta-cover-pick').addEventListener('click', async () => {
+  const btn = $('#meta-cover-pick')
+  btn.disabled = true
+  try {
+    const res = await window.saga.pickCover()
+    if (!res || res.canceled) return
+    state.meta = res.meta
+    $('#meta-cover-img').src = res.cover.url
+    $('#meta-cover-img').hidden = false
+    $('#meta-cover-name').textContent = res.cover.name
+    $('#meta-cover-clear').hidden = false
+    toast('封面已保存，导出 EPUB 时会写入')
+  } catch (err) {
+    toast('选择封面失败：' + cleanError(err))
+  } finally {
+    btn.disabled = false
+  }
+})
+$('#meta-cover-clear').addEventListener('click', async () => {
+  const btn = $('#meta-cover-clear')
+  btn.disabled = true
+  try {
+    state.meta = await window.saga.clearCover()
+    $('#meta-cover-img').hidden = true
+    $('#meta-cover-img').removeAttribute('src')
+    $('#meta-cover-name').textContent = '未选择'
+    btn.hidden = true
+    toast('封面已移除，EPUB 会使用排版标题页')
+  } catch (err) {
+    toast('移除封面失败：' + cleanError(err))
+  } finally {
+    btn.disabled = false
+  }
+})
+for (const input of $$('#meta-modal input, #meta-modal textarea')) {
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && input.tagName === 'INPUT') {
+      e.preventDefault()
+      saveMetaForm()
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      closeModal('meta')
+    }
+  })
+}
+
+/* ---------- 批注 ---------- */
+
+function bodyOfChapter (id) {
+  return document.querySelector(`.chapter-body[data-id="${id}"]`)
+}
+
+function elementOrParent (node) {
+  if (!node) return null
+  return node.nodeType === 1 ? node : node.parentElement
+}
+
+function offsetInBody (body, node, offset) {
+  const range = document.createRange()
+  range.selectNodeContents(body)
+  range.setEnd(node, offset)
+  return range.toString().length
+}
+
+// a character range inside a chapter body, for a comment's start and end
+function textRangeInBody (body, start, end) {
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
+  let pos = 0
+  let startNode = null
+  let startOffset = 0
+  let endNode = null
+  let endOffset = 0
+  let node
+  while ((node = walker.nextNode())) {
+    const len = node.nodeValue.length
+    if (!startNode && pos + len >= start) {
+      startNode = node
+      startOffset = start - pos
+    }
+    if (pos + len >= end) {
+      endNode = node
+      endOffset = end - pos
+      break
+    }
+    pos += len
+  }
+  if (!startNode || !endNode) return null
+  const range = document.createRange()
+  range.setStart(startNode, Math.max(0, Math.min(startOffset, startNode.nodeValue.length)))
+  range.setEnd(endNode, Math.max(0, Math.min(endOffset, endNode.nodeValue.length)))
+  return range
+}
+
+// the quote first, its old place second, a neighbour if the text moved
+function rangeForComment (comment) {
+  const body = bodyOfChapter(comment.chapterId)
+  if (!body || !comment.quote) return null
+  const text = body.textContent || ''
+  let start = -1
+  if (Number.isFinite(comment.start) && text.startsWith(comment.quote, comment.start)) {
+    start = comment.start
+  }
+  if (start < 0 && comment.prefix) {
+    const needle = comment.prefix + comment.quote + (comment.suffix || '')
+    const at = text.indexOf(needle)
+    if (at >= 0) start = at + comment.prefix.length
+  }
+  if (start < 0) {
+    let at = text.indexOf(comment.quote)
+    if (at >= 0) {
+      let best = at
+      while (at >= 0) {
+        if (Number.isFinite(comment.start) && Math.abs(at - comment.start) < Math.abs(best - comment.start)) best = at
+        at = text.indexOf(comment.quote, at + 1)
+      }
+      start = best
+    }
+  }
+  if (start < 0) return null
+  return textRangeInBody(body, start, start + comment.quote.length)
+}
+
+function updateCommentCount () {
+  const btn = $('#comments-btn')
+  if (!btn) return
+  const n = state.comments.filter((c) => !c.resolved).length
+  btn.textContent = n ? '批注 ' + n : '批注'
+}
+
+function positionCommentMarks () {
+  const layer = $('#comment-marks')
+  if (!layer) return
+  const paper = $('#paper')
+  const paperRight = paper ? paper.getBoundingClientRect().right : window.innerWidth - 40
+  const left = Math.min(window.innerWidth - 34, paperRight + 6)
+  const used = []
+  for (const mark of layer.querySelectorAll('.comment-mark')) {
+    const range = commentRanges.get(mark.dataset.id)
+    if (!range) {
+      mark.hidden = true
+      continue
+    }
+    const rects = range.getClientRects()
+    const rect = rects.length ? rects[0] : range.getBoundingClientRect()
+    if (!rect || (!rect.width && !rect.height) || rect.bottom < 30 || rect.top > window.innerHeight - 8) {
+      mark.hidden = true
+      continue
+    }
+    let top = Math.round(rect.top + Math.min(rect.height, 18) / 2 - 9)
+    while (used.some((y) => Math.abs(y - top) < 19)) top += 19
+    if (top > window.innerHeight - 24) {
+      mark.hidden = true
+      continue
+    }
+    used.push(top)
+    mark.hidden = false
+    mark.style.left = Math.max(8, left) + 'px'
+    mark.style.top = top + 'px'
+  }
+}
+
+function renderComments () {
+  const layer = $('#comment-marks')
+  if (!layer) return
+  layer.textContent = ''
+  commentRanges.clear()
+  const highlight = window.CSS && CSS.highlights ? new Highlight() : null
+  for (const comment of state.comments) {
+    if (comment.resolved) continue
+    const range = rangeForComment(comment)
+    if (!range) continue
+    if (highlight) highlight.add(range)
+    commentRanges.set(comment.id, range)
+    const mark = document.createElement('button')
+    mark.type = 'button'
+    mark.className = 'comment-mark'
+    mark.dataset.id = comment.id
+    mark.title = comment.note
+    mark.setAttribute('aria-label', '批注：' + comment.note)
+    mark.textContent = '批'
+    mark.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      showCommentPop(comment.id, mark)
+    })
+    layer.appendChild(mark)
+  }
+  if (window.CSS && CSS.highlights) {
+    if (highlight && highlight.size) CSS.highlights.set('saga-comment', highlight)
+    else CSS.highlights.delete('saga-comment')
+  }
+  updateCommentCount()
+  positionCommentMarks()
+  if (!$('#comments-modal').hidden) renderCommentsList()
+}
+
+function reanchorComments () {
+  for (const comment of state.comments) {
+    const body = bodyOfChapter(comment.chapterId)
+    if (!body) continue
+    const range = rangeForComment(comment)
+    if (!range) continue
+    comment.start = offsetInBody(body, range.startContainer, range.startOffset)
+    comment.end = offsetInBody(body, range.endContainer, range.endOffset)
+  }
+}
+
+let commentRenderTimer = null
+function scheduleCommentRender () {
+  clearTimeout(commentRenderTimer)
+  commentRenderTimer = setTimeout(() => {
+    reanchorComments()
+    renderComments()
+    if (state.comments.length) scheduleCommentSave()
+  }, 400)
+}
+
+function scheduleCommentSave () {
+  commentsDirty = true
+  clearTimeout(commentSaveTimer)
+  commentSaveTimer = setTimeout(saveCommentsNow, 500)
+}
+
+async function saveCommentsNow () {
+  if (!state.dir || !commentsDirty) return
+  commentsDirty = false
+  try {
+    await window.saga.writeComments(state.comments)
+  } catch (err) {
+    commentsDirty = true
+    toast('批注保存失败：' + cleanError(err))
+  }
+}
+
+let selToolsTimer = null
+function scheduleSelTools () {
+  clearTimeout(selToolsTimer)
+  selToolsTimer = setTimeout(updateSelTools, 30)
+}
+
+function updateSelTools () {
+  const tools = $('#sel-tools')
+  if (!tools) return
+  const sel = window.getSelection()
+  const modalOpen = !!document.querySelector('.modal:not([hidden])')
+  if (modalOpen || !sel || sel.isCollapsed || !sel.rangeCount) {
+    tools.hidden = true
+    return
+  }
+  const range = sel.getRangeAt(0)
+  const startBody = elementOrParent(range.startContainer)
+  const endBody = elementOrParent(range.endContainer)
+  const a = startBody && startBody.closest ? startBody.closest('.chapter-body') : null
+  const b = endBody && endBody.closest ? endBody.closest('.chapter-body') : null
+  if (!a || a !== b || !a.isContentEditable) {
+    tools.hidden = true
+    return
+  }
+  const rect = range.getBoundingClientRect()
+  if (!rect || (!rect.width && !rect.height)) {
+    tools.hidden = true
+    return
+  }
+  tools.hidden = false
+  tools.style.top = Math.max(36, rect.top - 38) + 'px'
+  tools.style.left = Math.max(8, Math.min(window.innerWidth - 120, rect.left + rect.width / 2 - 42)) + 'px'
+}
+
+function captureCommentSelection () {
+  const sel = window.getSelection()
+  if (!sel || sel.isCollapsed || !sel.rangeCount) {
+    toast('请先在正文里选择文字')
+    return null
+  }
+  const range = sel.getRangeAt(0)
+  const startEl = elementOrParent(range.startContainer)
+  const endEl = elementOrParent(range.endContainer)
+  const startBody = startEl && startEl.closest ? startEl.closest('.chapter-body') : null
+  const endBody = endEl && endEl.closest ? endEl.closest('.chapter-body') : null
+  if (!startBody || !endBody) {
+    toast('请先在正文里选择文字')
+    return null
+  }
+  if (!startBody.isContentEditable) {
+    toast('这一页不能添加批注')
+    return null
+  }
+  if (startBody !== endBody) {
+    toast('一次只能批注同一章里的文字')
+    return null
+  }
+  const quote = range.toString()
+  if (!quote.trim()) {
+    toast('选择的文字为空')
+    return null
+  }
+  const start = offsetInBody(startBody, range.startContainer, range.startOffset)
+  const end = offsetInBody(startBody, range.endContainer, range.endOffset)
+  const text = startBody.textContent || ''
+  return {
+    chapterId: startBody.dataset.id,
+    start,
+    end,
+    quote,
+    prefix: text.slice(Math.max(0, start - 40), start),
+    suffix: text.slice(end, end + 40)
+  }
+}
+
+function showCommentPop (id, anchor) {
+  const comment = state.comments.find((c) => c.id === id)
+  if (!comment) return
+  activeCommentId = id
+  hideCommentPop()
+  activeCommentId = id
+  const quote = comment.quote.trim()
+  $('#comment-pop-quote').textContent = '“' + quote.slice(0, 160) + (quote.length > 160 ? '…' : '') + '”'
+  $('#comment-pop-note').textContent = comment.note
+  $('#comment-pop-resolve').textContent = comment.resolved ? '恢复批注' : '标记已解决'
+  const pop = $('#comment-pop')
+  pop.hidden = false
+  const rect = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null
+  const w = pop.offsetWidth || 280
+  const h = pop.offsetHeight || 150
+  const left = Math.max(10, Math.min(window.innerWidth - w - 12, rect ? rect.right + 10 : window.innerWidth - w - 24))
+  const top = Math.max(36, Math.min(window.innerHeight - h - 12, rect ? rect.top - 8 : window.innerHeight - h - 40))
+  pop.style.left = left + 'px'
+  pop.style.top = top + 'px'
+}
+
+function hideCommentPop () {
+  const pop = $('#comment-pop')
+  if (pop) pop.hidden = true
+  activeCommentId = null
+}
+
+function toggleCommentResolved (id) {
+  const comment = state.comments.find((c) => c.id === id)
+  if (!comment) return
+  comment.resolved = !comment.resolved
+  scheduleCommentSave()
+  renderComments()
+  hideCommentPop()
+  toast(comment.resolved ? '批注已标记解决' : '批注已恢复')
+}
+
+function deleteComment (id) {
+  const before = state.comments.length
+  state.comments = state.comments.filter((c) => c.id !== id)
+  if (state.comments.length === before) return
+  scheduleCommentSave()
+  renderComments()
+  hideCommentPop()
+  toast('批注已删除')
+}
+
+function gotoComment (id) {
+  const comment = state.comments.find((c) => c.id === id)
+  if (!comment) return
+  closeModal('comments')
+  const range = rangeForComment(comment)
+  if (!range) {
+    scrollToChapter(comment.chapterId)
+    toast('原文已修改，批注仍保留')
+    return
+  }
+  const stage = $('#stage')
+  const top = stage.scrollTop + range.getBoundingClientRect().top - stage.getBoundingClientRect().top - stage.clientHeight / 3
+  stage.scrollTo({ top: Math.max(0, top), behavior: 'auto' })
+  state.currentId = comment.chapterId
+  markCurrent(comment.chapterId)
+  setTimeout(() => {
+    positionCommentMarks()
+    showCommentPop(comment.id, { getBoundingClientRect: () => range.getBoundingClientRect() })
+  }, 80)
+}
+
+function renderCommentsList () {
+  const box = $('#comments-list')
+  if (!box) return
+  box.textContent = ''
+  const order = state.meta ? state.meta.chapterOrder : []
+  const items = state.comments.slice().sort((a, b) => {
+    const ai = order.indexOf(a.chapterId)
+    const bi = order.indexOf(b.chapterId)
+    return (ai < 0 ? 9999 : ai) - (bi < 0 ? 9999 : bi) || (a.start || 0) - (b.start || 0)
+  })
+  if (!items.length) {
+    const empty = document.createElement('p')
+    empty.className = 'comments-empty'
+    empty.textContent = '还没有批注。选中正文里的文字，点浮出的「添加批注」。'
+    box.appendChild(empty)
+    return
+  }
+  let lastChapter = null
+  for (const comment of items) {
+    if (comment.chapterId !== lastChapter) {
+      const heading = document.createElement('h3')
+      heading.className = 'comment-chapter'
+      const known = state.meta && state.meta.chapterOrder.includes(comment.chapterId)
+      heading.textContent = known ? labelOf(comment.chapterId) : '已删除的章节'
+      box.appendChild(heading)
+      lastChapter = comment.chapterId
+    }
+    const row = document.createElement('div')
+    row.className = 'comment-row' + (comment.resolved ? ' resolved' : '')
+    const quote = document.createElement('p')
+    quote.className = 'comment-row-quote'
+    const quoted = comment.quote.trim()
+    quote.textContent = quoted.slice(0, 120) + (quoted.length > 120 ? '…' : '')
+    const note = document.createElement('p')
+    note.className = 'comment-row-note'
+    note.textContent = comment.note
+    if (!rangeForComment(comment)) {
+      const miss = document.createElement('span')
+      miss.className = 'comment-orphan'
+      miss.textContent = '原文已修改'
+      row.appendChild(miss)
+    }
+    const actions = document.createElement('div')
+    actions.className = 'comment-row-actions'
+    for (const [act, label] of [['goto', '定位'], ['resolve', comment.resolved ? '恢复' : '已解决'], ['delete', '删除']]) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.dataset.act = act
+      btn.dataset.id = comment.id
+      btn.textContent = label
+      actions.appendChild(btn)
+    }
+    row.append(quote, note, actions)
+    box.appendChild(row)
+  }
+}
+
+$('#sel-comment-btn').addEventListener('mousedown', (e) => e.preventDefault())
+$('#sel-comment-btn').addEventListener('click', () => {
+  const picked = captureCommentSelection()
+  if (!picked) return
+  commentSelection = picked
+  $('#comment-quote').textContent = picked.quote.trim().slice(0, 400)
+  $('#comment-text').value = ''
+  $('#comment-error').hidden = true
+  $('#sel-tools').hidden = true
+  openModal('comment')
+  setTimeout(() => $('#comment-text').focus(), 30)
+})
+$('#comment-save').addEventListener('click', () => {
+  const note = $('#comment-text').value.trim()
+  const error = $('#comment-error')
+  if (!note) {
+    error.textContent = '批注不能为空'
+    error.hidden = false
+    return
+  }
+  if (!commentSelection) {
+    error.textContent = '没有选中文字'
+    error.hidden = false
+    return
+  }
+  state.comments.push({
+    id: 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+    ...commentSelection,
+    note,
+    resolved: false,
+    createdAt: new Date().toISOString()
+  })
+  commentSelection = null
+  closeModal('comment')
+  const sel = window.getSelection()
+  if (sel) sel.removeAllRanges()
+  scheduleCommentSave()
+  renderComments()
+  toast('已添加批注')
+})
+$('#comment-modal').addEventListener('click', (e) => {
+  if (e.target === $('#comment-modal') || e.target.closest('[data-close="comment"]')) commentSelection = null
+})
+$('#comments-btn').addEventListener('click', renderCommentsList)
+$('#comments-list').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act]')
+  if (!btn) return
+  if (btn.dataset.act === 'resolve') toggleCommentResolved(btn.dataset.id)
+  else if (btn.dataset.act === 'delete') deleteComment(btn.dataset.id)
+  else if (btn.dataset.act === 'goto') gotoComment(btn.dataset.id)
+})
+function commentsMarkdown () {
+  const meta = state.meta || {}
+  const order = meta.chapterOrder || []
+  const items = state.comments.slice().sort((a, b) => {
+    const ai = order.indexOf(a.chapterId)
+    const bi = order.indexOf(b.chapterId)
+    return (ai < 0 ? 9999 : ai) - (bi < 0 ? 9999 : bi) || (a.start || 0) - (b.start || 0)
+  })
+  if (!items.length) return ''
+  const unresolved = items.filter((c) => !c.resolved).length
+  const lines = [
+    '# 《' + (meta.title || state.name || '未命名') + '》批注',
+    '',
+    '共 ' + items.length + ' 条，未解决 ' + unresolved + ' 条。',
+    ''
+  ]
+  let lastChapter = null
+  for (const comment of items) {
+    if (comment.chapterId !== lastChapter) {
+      const known = order.includes(comment.chapterId)
+      lines.push('## ' + (known ? labelOf(comment.chapterId) : '已删除的章节'), '')
+      lastChapter = comment.chapterId
+    }
+    const quote = String(comment.quote || '').trim().replace(/\r/g, '')
+    for (const line of quote.split('\n')) lines.push('> ' + line)
+    lines.push('')
+    lines.push(String(comment.note || '').trim())
+    lines.push('')
+    lines.push('- 状态：' + (comment.resolved ? '已解决' : '未解决'))
+    if (comment.createdAt) lines.push('- 时间：' + String(comment.createdAt).slice(0, 10))
+    lines.push('')
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n'
+}
+
+async function exportComments () {
+  const text = commentsMarkdown()
+  if (!text) {
+    toast('还没有批注可以导出')
+    return
+  }
+  const btn = $('#comments-export')
+  btn.disabled = true
+  try {
+    const res = await window.saga.exportComments({
+      text,
+      name: (state.meta && state.meta.title ? state.meta.title : state.name || '未命名') + '-批注'
+    })
+    if (!res || res.canceled) return
+    closeModal('comments')
+    toast('批注已导出 ' + String(res.file).split(/[\\/]/).pop(), 2800)
+  } catch (err) {
+    toast('导出批注失败：' + cleanError(err))
+  } finally {
+    btn.disabled = false
+  }
+}
+
+async function copyComments () {
+  const text = commentsMarkdown()
+  if (!text) {
+    toast('还没有批注可以复制')
+    return
+  }
+  let ok = false
+  try { ok = await window.saga.copyText(text) } catch {}
+  toast(ok ? '批注已复制到剪贴板' : '复制失败')
+}
+
+$('#comments-copy').addEventListener('click', copyComments)
+$('#comments-export').addEventListener('click', exportComments)
+
+$('#comment-pop-resolve').addEventListener('click', () => {
+  if (activeCommentId) toggleCommentResolved(activeCommentId)
+})
+$('#comment-pop-delete').addEventListener('click', () => {
+  if (activeCommentId) deleteComment(activeCommentId)
+})
+$('#comment-pop-close').addEventListener('click', hideCommentPop)
+document.addEventListener('mousedown', (e) => {
+  const pop = $('#comment-pop')
+  if (!pop || pop.hidden) return
+  if (pop.contains(e.target) || e.target.closest('.comment-mark')) return
+  hideCommentPop()
+})
+document.addEventListener('selectionchange', scheduleSelTools)
+document.addEventListener('mouseup', scheduleSelTools)
+document.addEventListener('keyup', (e) => {
+  if (e.shiftKey || e.key === 'Escape') scheduleSelTools()
+})
+window.addEventListener('resize', positionCommentMarks)
+
+/* ---------- 投稿稿 ---------- */
+
+function fillManuscriptForm () {
+  const meta = state.meta || {}
+  const saved = meta.manuscript || {}
+  const lang = String(meta.language || 'zh-CN').toLowerCase()
+  $('#ms-byline').value = saved.byline != null ? saved.byline : (meta.author || '')
+  $('#ms-header-name').value = saved.headerName || ''
+  $('#ms-contact-name').value = saved.contactName != null ? saved.contactName : (meta.author || '')
+  $('#ms-address').value = saved.address || ''
+  $('#ms-phone').value = saved.phone || ''
+  $('#ms-email').value = saved.email || ''
+  $('#ms-font').value = saved.font === 'courier' ? 'courier' : 'times'
+  $('#ms-paper').value = saved.paper === 'Letter' ? 'Letter' : saved.paper === 'A4' ? 'A4' : (lang.startsWith('zh') ? 'A4' : 'Letter')
+  $('#ms-end').checked = saved.end !== false
+  $('#manuscript-note').textContent = ''
+}
+
+function manuscriptValues () {
+  return {
+    byline: $('#ms-byline').value.trim(),
+    headerName: $('#ms-header-name').value.trim(),
+    contactName: $('#ms-contact-name').value.trim(),
+    address: $('#ms-address').value,
+    phone: $('#ms-phone').value.trim(),
+    email: $('#ms-email').value.trim(),
+    font: $('#ms-font').value,
+    paper: $('#ms-paper').value,
+    end: $('#ms-end').checked
+  }
+}
+
+async function runManuscript (format) {
+  if (!state.meta) return
+  const note = $('#manuscript-note')
+  const docx = $('#ms-docx')
+  const pdf = $('#ms-pdf')
+  docx.disabled = true
+  pdf.disabled = true
+  note.textContent = format === 'pdf' ? '正在排版 PDF，长书可能需要一会儿…' : '正在生成 DOCX…'
+  try {
+    await flush()
+    const res = await window.saga.exportManuscript({ format, ...manuscriptValues() })
+    if (!res || res.canceled) {
+      note.textContent = '已取消，没有生成文件'
+      return
+    }
+    state.meta.manuscript = { ...(state.meta.manuscript || {}), ...manuscriptValues() }
+    closeModal('manuscript')
+    const bits = ['已导出 ' + String(res.file).split(/[\\/]/).pop()]
+    if (res.wordsText) bits.push(res.wordsText)
+    if (res.pages) bits.push(res.pages + ' 页')
+    toast(bits.join(' · '), 3600)
+  } catch (err) {
+    const message = '导出失败：' + cleanError(err)
+    note.textContent = message
+    toast(message)
+  } finally {
+    docx.disabled = false
+    pdf.disabled = false
+  }
+}
+
+document.querySelector('[data-open="manuscript"]').addEventListener('click', () => {
+  closeModal('export')
+  fillManuscriptForm()
+})
+$('#ms-docx').addEventListener('click', () => runManuscript('docx'))
+$('#ms-pdf').addEventListener('click', () => runManuscript('pdf'))
+
 /* ---------- AI 接入 ---------- */
 
 let aiData = null
@@ -1825,8 +2881,9 @@ async function runExport (format) {
       setExportNote('')
       return
     }
-    setExportNote('已导出：' + res.file)
-    toast('已导出 ' + String(res.file).split(/[\\/]/).pop())
+    const warnings = Array.isArray(res.warnings) && res.warnings.length ? '；' + res.warnings.join('；') : ''
+    setExportNote('已导出：' + res.file + warnings)
+    toast('已导出 ' + String(res.file).split(/[\\/]/).pop() + warnings, warnings ? 4200 : 2400)
   } catch (err) {
     const message = '导出失败：' + cleanError(err)
     setExportNote(message)
@@ -1835,6 +2892,61 @@ async function runExport (format) {
     setExportBusy(false)
   }
 }
+
+/* ---------- PDF 排版 ---------- */
+
+function pdfOptionsKey () {
+  return 'saga.pdf.' + (state.dir || 'none')
+}
+
+function fillPdfForm () {
+  let saved = null
+  try { saved = JSON.parse(localStorage.getItem(pdfOptionsKey()) || 'null') } catch {}
+  const v = saved && typeof saved === 'object' ? saved : {}
+  $('#pdf-paper').value = ['A4', 'Letter', 'A5', '6x9'].includes(v.paper) ? v.paper : 'A4'
+  $('#pdf-font-size').value = ['10', '11', '12', '14'].includes(String(v.fontSize)) ? String(v.fontSize) : '12'
+  $('#pdf-line-height').value = ['1.4', '1.6', '1.85', '2'].includes(String(v.lineHeight)) ? String(v.lineHeight) : '1.85'
+  $('#pdf-note').textContent = ''
+}
+
+async function runPdf () {
+  if (!state.meta) return
+  const btn = $('#pdf-create')
+  const note = $('#pdf-note')
+  const options = {
+    paper: $('#pdf-paper').value,
+    fontSize: $('#pdf-font-size').value,
+    lineHeight: $('#pdf-line-height').value
+  }
+  btn.disabled = true
+  note.textContent = '正在排版 PDF…'
+  try {
+    await flush()
+    const res = await window.saga.exportPdf({
+      font: document.documentElement.dataset.font || 'serif',
+      ...options
+    })
+    if (!res || res.canceled) {
+      note.textContent = '已取消，没有生成文件'
+      return
+    }
+    try { localStorage.setItem(pdfOptionsKey(), JSON.stringify(options)) } catch {}
+    closeModal('pdf')
+    toast('已导出 ' + String(res.file).split(/[\\/]/).pop(), 2400)
+  } catch (err) {
+    const message = '导出失败：' + cleanError(err)
+    note.textContent = message
+    toast(message)
+  } finally {
+    btn.disabled = false
+  }
+}
+
+document.querySelector('[data-open="pdf"]').addEventListener('click', () => {
+  closeModal('export')
+  fillPdfForm()
+})
+$('#pdf-create').addEventListener('click', runPdf)
 
 function openNewBook () {
   $('#nb-title').value = ''
@@ -1885,6 +2997,7 @@ async function runKdp () {
     const res = await window.saga.exportKdp({
       trim: kdpTrim,
       paper: kdpPaper,
+      guides: $('#kdp-guides').checked,
       font: document.documentElement.dataset.font || 'serif'
     })
     if (!res || res.canceled) {
@@ -1958,6 +3071,9 @@ $('#zoom-in').addEventListener('click', () => applyZoom(zoomValue() + 10))
 $('#stage').addEventListener('scroll', () => {
   if (!state.meta) return
   queueProgress()
+  positionCommentMarks()
+  $('#sel-tools').hidden = true
+  hideCommentPop()
   if (jumpTop !== null) {
     // the picked chapter stays current until its page arrives (or the
     // writer takes the scroll back)
@@ -1987,6 +3103,10 @@ document.addEventListener('keydown', (e) => {
       settleConfirm(false)
       return
     }
+    if ($('#find-bar').hidden === false && !document.querySelector('.modal:not([hidden])')) {
+      closeFind()
+      return
+    }
     closePopmenu()
     for (const m of $$('.modal')) m.hidden = true
     return
@@ -2001,9 +3121,13 @@ document.addEventListener('keydown', (e) => {
     $('#import-btn').click()
   } else if (key === 'f') {
     e.preventDefault()
-    const input = $('#nav-search-input')
-    input.focus()
-    input.select()
+    if (e.shiftKey) {
+      const input = $('#nav-search-input')
+      input.focus()
+      input.select()
+    } else {
+      openFind()
+    }
   }
 })
 

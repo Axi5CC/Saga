@@ -13,6 +13,8 @@
   <header id="topbar">
     <nav id="topbar-links">
       <button id="export-btn" class="top-link" type="button" data-open="export" hidden>导出</button>
+      <button id="meta-btn" class="top-link" type="button" data-open="meta" hidden>书籍</button>
+      <button id="comments-btn" class="top-link" type="button" data-open="comments" hidden>批注</button>
       <button id="ai-btn" class="top-link" type="button" data-open="ai">AI</button>
       <button class="top-link" type="button" data-open="settings">设置</button>
       <button class="top-link" type="button" data-open="help">帮助</button>
@@ -66,6 +68,18 @@
 
   <!-- 2. the editor: the book's shape on the left, the manuscript on paper -->
   <div id="editor" class="view" hidden>
+    <div id="find-bar" class="find-bar" hidden>
+      <input id="find-input" type="search" placeholder="查找正文…" spellcheck="false" autocomplete="off">
+      <span id="find-count" class="find-count">0 / 0</span>
+      <button id="find-prev" class="find-btn" type="button" title="上一个（Shift+Enter）">↑</button>
+      <button id="find-next" class="find-btn" type="button" title="下一个（Enter）">↓</button>
+      <input id="find-replace-input" type="text" placeholder="替换为…" spellcheck="false" autocomplete="off">
+      <button id="find-replace-one" class="find-btn" type="button">替换</button>
+      <button id="find-replace-all" class="find-btn" type="button">全部替换</button>
+      <label class="find-check"><input id="find-scope-all" type="checkbox"> 全书</label>
+      <label class="find-check"><input id="find-case" type="checkbox"> 区分大小写</label>
+      <button id="find-close" class="find-close" type="button" title="关闭">×</button>
+    </div>
     <aside id="nav-pane">
       <div id="nav-head">
         <input id="nav-search-input" type="search" placeholder="搜索章节" title="搜索章节"
@@ -105,6 +119,20 @@
   </div>
 
   <div id="opening" class="opening" hidden><span>正在打开…</span></div>
+
+  <div id="sel-tools" class="sel-tools" hidden>
+    <button id="sel-comment-btn" type="button">添加批注</button>
+  </div>
+  <div id="comment-marks" class="comment-marks"></div>
+  <div id="comment-pop" class="comment-pop" hidden>
+    <p id="comment-pop-quote" class="comment-pop-quote"></p>
+    <p id="comment-pop-note" class="comment-pop-note"></p>
+    <div class="comment-pop-actions">
+      <button id="comment-pop-resolve" type="button">标记已解决</button>
+      <button id="comment-pop-delete" type="button">删除</button>
+      <button id="comment-pop-close" type="button">关闭</button>
+    </div>
+  </div>
 
   <div id="toast" class="toast" hidden></div>
 
@@ -189,11 +217,55 @@
           <button class="export-opt" type="button" data-export="odt"><b>ODT</b><span>LibreOffice / OpenOffice 文档</span></button>
           <button class="export-opt" type="button" data-export="rtf"><b>RTF</b><span>Word、WPS 都能打开的富文本</span></button>
           <button class="export-opt" type="button" data-export="tex"><b>LaTeX</b><span>排版源码，用 XeLaTeX 编译</span></button>
-          <button class="export-opt" type="button" data-export="pdf"><b>PDF</b><span>A4 纸张，可以直接打印</span></button>
-          <button class="export-opt" type="button" data-open="kdp"><b>KDP</b><span>纸质书：内页 PDF + 封面模板</span></button>
+          <button class="export-opt" type="button" data-open="pdf"><b>PDF</b><span>可选纸张、字号与行距</span></button>
+          <button class="export-opt" type="button" data-open="manuscript"><b>投稿稿</b><span>标准投稿格式：DOCX / PDF</span></button>
+          <button class="export-opt" type="button" data-open="kdp"><b>KDP</b><span>纸质书：内页 PDF + 封面</span></button>
         </div>
         <p id="export-note" class="modal-note"></p>
         <p class="modal-note">当前正文字体会被写入成品：PDF / KDP / EPUB 内嵌字体，DOCX / ODT / RTF / HTML 记录字体名；TXT / Markdown 不携带字体。</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="pdf-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="pdf-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="pdf-title">PDF 排版</h2>
+        <button class="modal-x" type="button" data-close="pdf" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-note">页面按纸张大小重新分页，章节另起一页，页脚居中显示页码。</p>
+        <div class="field-row">
+          <label class="field"><span>纸张</span>
+            <select id="pdf-paper">
+              <option value="A4">A4</option>
+              <option value="Letter">Letter</option>
+              <option value="A5">A5</option>
+              <option value="6x9">6 × 9 英寸</option>
+            </select>
+          </label>
+          <label class="field"><span>字号</span>
+            <select id="pdf-font-size">
+              <option value="10">10 pt</option>
+              <option value="11">11 pt</option>
+              <option value="12">12 pt</option>
+              <option value="14">14 pt</option>
+            </select>
+          </label>
+          <label class="field"><span>行距</span>
+            <select id="pdf-line-height">
+              <option value="1.4">1.4</option>
+              <option value="1.6">1.6</option>
+              <option value="1.85">1.85</option>
+              <option value="2">2.0</option>
+            </select>
+          </label>
+        </div>
+        <p id="pdf-note" class="modal-note"></p>
+      </div>
+      <div class="modal-foot">
+        <button class="ghost-btn" type="button" data-close="pdf">取消</button>
+        <button id="pdf-create" class="primary" type="button">导出 PDF</button>
       </div>
     </div>
   </div>
@@ -205,7 +277,7 @@
         <button class="modal-x" type="button" data-close="kdp" title="关闭">×</button>
       </div>
       <div class="modal-body">
-        <p class="modal-note">生成印刷内页 PDF，并按最终页数生成封面模板。内页按所选开本留好印刷用的内侧留白。</p>
+        <p class="modal-note">生成印刷内页 PDF，并按最终页数和「书籍」里的信息生成封面。封底简介来自书籍信息。</p>
         <p class="modal-label">开本</p>
         <div class="kdp-choice" id="kdp-trim">
           <button class="kdp-opt" type="button" data-trim="5x8">5 × 8</button>
@@ -218,11 +290,145 @@
           <button class="kdp-opt on" type="button" data-paper="white">白纸</button>
           <button class="kdp-opt" type="button" data-paper="cream">米色纸</button>
         </div>
+        <label class="check-line"><input id="kdp-guides" type="checkbox"> 在封面上显示裁切线（仅作设计参考）</label>
         <p id="kdp-note" class="modal-note"></p>
       </div>
       <div class="modal-foot">
         <button class="ghost-btn" type="button" data-close="kdp">取消</button>
         <button id="kdp-create" class="primary" type="button">生成内页与封面</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="meta-modal" class="modal" hidden>
+    <div class="modal-card meta-card" role="dialog" aria-modal="true" aria-labelledby="meta-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="meta-title">书籍信息</h2>
+        <button class="modal-x" type="button" data-close="meta" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <label class="field"><span>书名</span><input id="meta-title-input" type="text" autocomplete="off"></label>
+        <label class="field"><span>副标题</span><input id="meta-subtitle" type="text" autocomplete="off"></label>
+        <label class="field"><span>作者</span><input id="meta-author" type="text" autocomplete="off"></label>
+        <div class="field-row">
+          <label class="field"><span>系列</span><input id="meta-series" type="text" placeholder="可选" autocomplete="off"></label>
+          <label class="field narrow"><span>系列序号</span><input id="meta-series-index" type="text" placeholder="1" autocomplete="off"></label>
+        </div>
+        <div class="field-row">
+          <label class="field"><span>语言</span><input id="meta-language" type="text" list="meta-language-list" placeholder="zh-CN" autocomplete="off"></label>
+          <label class="field"><span>ISBN</span><input id="meta-isbn" type="text" placeholder="可选" autocomplete="off"></label>
+        </div>
+        <datalist id="meta-language-list">
+          <option value="zh-CN">简体中文</option>
+          <option value="zh-TW">繁體中文</option>
+          <option value="en">English</option>
+          <option value="ja">日本語</option>
+          <option value="ko">한국어</option>
+          <option value="fr">Français</option>
+          <option value="de">Deutsch</option>
+          <option value="es">Español</option>
+        </datalist>
+        <label class="field"><span>出版社</span><input id="meta-publisher" type="text" placeholder="可选" autocomplete="off"></label>
+        <label class="field"><span>版权声明</span><input id="meta-rights" type="text" placeholder="如 © 2026 作者" autocomplete="off"></label>
+        <label class="field"><span>简介</span><textarea id="meta-description" rows="3" placeholder="用于 EPUB 描述和 KDP 封底"></textarea></label>
+        <label class="field"><span>关键词</span><input id="meta-keywords" type="text" placeholder="用逗号分隔" autocomplete="off"></label>
+        <div class="field cover-field">
+          <span>封面图片</span>
+          <div class="cover-row">
+            <img id="meta-cover-img" class="cover-preview" alt="封面预览" hidden>
+            <div class="cover-copy">
+              <p id="meta-cover-name" class="cover-name">未选择</p>
+              <div class="cover-actions">
+                <button id="meta-cover-pick" class="ghost-btn" type="button">选择图片…</button>
+                <button id="meta-cover-clear" class="ghost-btn" type="button" hidden>移除</button>
+              </div>
+              <p class="modal-note">用于 EPUB；建议 JPG 或 PNG，长边 1600 px 以上。</p>
+            </div>
+          </div>
+        </div>
+        <p class="modal-note">语言和 ISBN 会写进 EPUB；简介会排到 KDP 封底；封面图片会写进 EPUB。</p>
+        <p id="meta-error" class="welcome-error" hidden></p>
+      </div>
+      <div class="modal-foot">
+        <button class="ghost-btn" type="button" data-close="meta">取消</button>
+        <button id="meta-save" class="primary" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="comments-modal" class="modal" hidden>
+    <div class="modal-card comments-card" role="dialog" aria-modal="true" aria-labelledby="comments-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="comments-title">批注</h2>
+        <button class="modal-x" type="button" data-close="comments" title="关闭">×</button>
+      </div>
+      <div class="modal-body" id="comments-list"></div>
+      <div class="modal-foot">
+        <span class="modal-note comments-hint">选中正文文字，点浮出的「添加批注」。</span>
+        <button id="comments-copy" class="ghost-btn" type="button">复制</button>
+        <button id="comments-export" class="primary" type="button">导出 Markdown</button>
+        <button class="ghost-btn" type="button" data-close="comments">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="comment-modal" class="modal" hidden>
+    <div class="modal-card comment-card" role="dialog" aria-modal="true" aria-labelledby="comment-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="comment-title">添加批注</h2>
+        <button class="modal-x" type="button" data-close="comment" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <blockquote id="comment-quote" class="comment-quote"></blockquote>
+        <label class="field"><span>批注</span><textarea id="comment-text" rows="4" placeholder="写下想法、修改意见或待办…"></textarea></label>
+        <p id="comment-error" class="welcome-error" hidden></p>
+      </div>
+      <div class="modal-foot">
+        <button class="ghost-btn" type="button" data-close="comment">取消</button>
+        <button id="comment-save" class="primary" type="button">保存批注</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="manuscript-modal" class="modal" hidden>
+    <div class="modal-card manuscript-card" role="dialog" aria-modal="true" aria-labelledby="manuscript-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="manuscript-title">投稿稿</h2>
+        <button class="modal-x" type="button" data-close="manuscript" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-note">标准投稿格式：标题页、双倍行距、12pt、1 英寸页边距，章节另起一页，页眉为「姓氏 / 书名 / 页码」。</p>
+        <div class="field-row">
+          <label class="field"><span>署名</span><input id="ms-byline" type="text" autocomplete="off"></label>
+          <label class="field"><span>页眉署名</span><input id="ms-header-name" type="text" placeholder="自动" autocomplete="off"></label>
+        </div>
+        <label class="field"><span>联系人</span><input id="ms-contact-name" type="text" autocomplete="off"></label>
+        <label class="field"><span>地址</span><textarea id="ms-address" rows="2" placeholder="每行一行"></textarea></label>
+        <div class="field-row">
+          <label class="field"><span>电话</span><input id="ms-phone" type="text" autocomplete="off"></label>
+          <label class="field"><span>邮箱</span><input id="ms-email" type="text" autocomplete="off"></label>
+        </div>
+        <div class="field-row">
+          <label class="field"><span>字体</span>
+            <select id="ms-font">
+              <option value="times">Times New Roman</option>
+              <option value="courier">Courier New</option>
+            </select>
+          </label>
+          <label class="field"><span>纸张</span>
+            <select id="ms-paper">
+              <option value="A4">A4</option>
+              <option value="Letter">Letter</option>
+            </select>
+          </label>
+        </div>
+        <label class="check-line"><input id="ms-end" type="checkbox" checked> 结尾写「完 / END」</label>
+        <p id="manuscript-note" class="modal-note"></p>
+      </div>
+      <div class="modal-foot">
+        <button class="ghost-btn" type="button" data-close="manuscript">取消</button>
+        <button id="ms-pdf" class="ghost-btn" type="button">导出 PDF</button>
+        <button id="ms-docx" class="primary" type="button">导出 DOCX</button>
       </div>
     </div>
   </div>
@@ -330,12 +536,14 @@
       <div class="modal-body about-body">
         <p class="about-name">Saga</p>
         <p class="about-line">Saga 是写作工具，不是电子书阅读器。它打开和创建的是按模板生成的书稿文件夹，不是 EPUB、PDF、MOBI 等成品电子书。</p>
-        <p class="about-line">主线是「新建书稿 → 写作 → 导出成品」：顶栏「导出」可以把整本书生成 TXT、Markdown、HTML、EPUB、DOCX、ODT、RTF、LaTeX、PDF 和 KDP 纸质书。</p>
+        <p class="about-line">主线是「新建书稿 → 写作 → 导出成品」：顶栏「导出」可以把整本书生成 TXT、Markdown、HTML、EPUB、DOCX、ODT、RTF、LaTeX、PDF、投稿稿和 KDP 纸质书。</p>
+        <p class="about-line">「书籍」里填写书名、作者、系列、语言、ISBN 和简介，EPUB、投稿稿和 KDP 封面会一起使用；选中正文文字可以添加批注。</p>
         <p class="about-line">书就是文件夹：<code>book.json</code> 记录书的结构，<code>chapters/</code> 里每一章是一个 HTML 文件。</p>
         <p class="about-label">书稿文件夹</p>
         <pre class="about-tree">小城畸人/
-  book.json      书名、作者、章节顺序与章节类型
+  book.json      书名、作者、章节顺序与出版信息
   chapters/      每章一个 .html 文件
+  comments.json  批注（不会写进正文）
   darlings/      删除或 AI 改写前的原文备份（可选）</pre>
         <p class="about-line">Saga 打开和创建的就是这样的文件夹；EPUB、PDF 是导出后的成品，不是导入格式。</p>
         <div class="about-actions">

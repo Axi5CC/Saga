@@ -16,7 +16,7 @@ const core = require('./book-core')
 const { exportBook } = require('./export-book')
 const { openInSaga } = require('./launcher')
 
-const VERSION = '1.0.0'
+const VERSION = '1.4.0'
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
 
 const bookArg = {
@@ -65,6 +65,49 @@ const TOOLS = [
         include_html: { type: 'boolean', description: '同时返回章节 HTML，默认 false' }
       },
       required: ['book', 'chapter'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'list_comments',
+    description: '读取一本书的批注，可按章节筛选；返回原文、批注和是否已解决。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        book: bookArg,
+        chapter: chapterArg
+      },
+      required: ['book'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'add_comment',
+    description: '在某一章的原文上添加批注。quote 必须是该章正文里连续、完全一致的一段文字；写入前会确认书没有在窗口中打开。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        book: bookArg,
+        chapter: chapterArg,
+        quote: { type: 'string', description: '要批注的原文，一段连续文字' },
+        note: { type: 'string', description: '批注内容' },
+        start: { type: 'number', description: '可选：原文在这章纯文本里的起始位置' }
+      },
+      required: ['book', 'chapter', 'quote', 'note'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'resolve_comment',
+    description: '把一条批注标记为已解决；resolved=false 可以恢复。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        book: bookArg,
+        id: { type: 'string', description: '批注 id' },
+        resolved: { type: 'boolean', description: '默认 true' }
+      },
+      required: ['book', 'id'],
       additionalProperties: false
     }
   },
@@ -203,12 +246,13 @@ const TOOLS = [
         book: bookArg,
         format: {
           type: 'string',
-          enum: ['txt', 'md', 'html', 'epub', 'docx', 'odt', 'rtf', 'tex', 'pdf', 'kdp']
+          enum: ['txt', 'md', 'html', 'epub', 'docx', 'odt', 'rtf', 'tex', 'pdf', 'kdp', 'manuscript', 'manuscript-pdf']
         },
         out: { type: 'string', description: '输出文件；不填则放在书文件夹旁边' },
         out_dir: { type: 'string', description: 'KDP 输出文件夹；不填则放在书文件夹旁边' },
         trim: { type: 'string', enum: Object.keys(require('./book-formats').KDP_TRIMS), description: 'KDP 开本，默认 6x9' },
-        paper: { type: 'string', enum: ['white', 'cream'], description: 'KDP 纸张，默认 white' }
+        paper: { type: 'string', enum: ['white', 'cream'], description: 'KDP 纸张，默认 white' },
+        guides: { type: 'boolean', description: 'KDP 封面上显示裁切线，默认 false' }
       },
       required: ['book', 'format'],
       additionalProperties: false
@@ -247,6 +291,17 @@ async function callTool (name, args) {
       if (!args.include_html) delete data.html
       return data
     }
+    case 'list_comments':
+      return core.listComments(book, args.chapter)
+    case 'add_comment':
+      return core.addComment(book, {
+        chapter: args.chapter,
+        quote: args.quote,
+        note: args.note,
+        start: Number.isInteger(args.start) ? args.start : -1
+      })
+    case 'resolve_comment':
+      return core.setCommentResolved(book, args.id, args.resolved === undefined ? true : !!args.resolved)
     case 'write_chapter':
       if (typeof args.text !== 'string') throw new Error('缺少 text')
       return core.writeChapter(book, args.chapter, {
@@ -284,7 +339,8 @@ async function callTool (name, args) {
         out: args.out,
         outDir: args.out_dir,
         trim: args.trim,
-        paper: args.paper
+        paper: args.paper,
+        guides: !!args.guides
       })
     case 'open_book':
       openInSaga(book)

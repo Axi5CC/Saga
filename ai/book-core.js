@@ -11,6 +11,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
+const crypto = require('node:crypto')
 
 const MAX_RECENT = 12
 
@@ -19,6 +20,12 @@ const KIND_LABEL = {
   opening: '卷首语', foreword: '前言', prologue: '序章', part: '部分',
   unnumbered: '未命名章节', epilogue: '尾声', extra: '番外',
   afterword: '后记', acknowledgments: '致谢', about: '关于作者'
+}
+const KIND_LABEL_EN = {
+  copyright: 'Copyright', dedication: 'Dedication', epigraph: 'Epigraph', contents: 'Contents',
+  opening: 'Opening', foreword: 'Foreword', prologue: 'Prologue', part: 'Part',
+  unnumbered: 'Untitled', epilogue: 'Epilogue', extra: 'Extra',
+  afterword: 'Afterword', acknowledgments: 'Acknowledgments', about: 'About the Author'
 }
 const CONTENTS_SKIP = ['copyright', 'dedication', 'epigraph', 'contents']
 const STORY_KINDS = new Set(['chapter', 'part', 'prologue', 'unnumbered', 'epilogue', 'extra'])
@@ -114,20 +121,29 @@ function numberIn (meta, id, kind) {
   return n
 }
 
+// The book's language is the metadata editor's language field; an English
+// book should not come out of the exporters with Chinese chapter headings.
+const isChineseBook = (meta) => !meta || !meta.language || /^zh/i.test(String(meta.language))
+
 function bookLabel (meta, id) {
   const kind = kindOfMeta(meta, id)
   const titled = String((meta.chapterTitles && meta.chapterTitles[id]) || '').trim()
+  const zh = isChineseBook(meta)
+  const sep = zh ? ' · ' : ' — '
   if (kind === 'chapter') {
     const n = numberIn(meta, id, 'chapter')
-    return titled ? '第 ' + n + ' 章 · ' + titled : '第 ' + n + ' 章'
+    const name = zh ? '第 ' + n + ' 章' : 'Chapter ' + n
+    return titled ? name + sep + titled : name
   }
   if (kind === 'part') {
     const n = numberIn(meta, id, 'part')
-    const name = '第 ' + (ROMAN[n] || n) + ' 部分'
-    return titled ? name + ' · ' + titled : name
+    const name = zh ? '第 ' + (ROMAN[n] || n) + ' 部分' : 'Part ' + (ROMAN[n] || n)
+    return titled ? name + sep + titled : name
   }
-  if (kind === 'unnumbered') return titled || '未命名'
-  return KIND_LABEL[kind] || kind
+  if (kind === 'unnumbered') return titled || (zh ? '未命名' : 'Untitled')
+  // a prologue, epilogue or extra can carry the writer's own name
+  if (titled && (kind === 'prologue' || kind === 'epilogue' || kind === 'extra')) return titled
+  return (zh ? KIND_LABEL : KIND_LABEL_EN)[kind] || kind
 }
 
 function contentsLines (meta) {
@@ -170,6 +186,23 @@ function textOf (html) {
     })
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+// the words a reader would select, in the same order the window's
+// `.chapter-body.textContent` produces: block tags add no separators, `<br>`
+// adds no character.  Comment anchors use offsets into this text.
+function contentText (html) {
+  return String(html || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, code) => {
+      if (code[0] === '#') {
+        const n = code[1].toLowerCase() === 'x' ? parseInt(code.slice(2), 16) : Number(code.slice(1))
+        return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : ''
+      }
+      if (code.toLowerCase() === 'nbsp') return '\u00a0'
+      return ENTITY[code.toLowerCase()] ?? m
+    })
+    .replace(/\r/g, '')
 }
 
 function countWords (text) {
@@ -510,6 +543,22 @@ function updateBookMeta (dir, opts) {
   }
   if (opts.author != null) meta.author = String(opts.author).replace(/\s+/g, ' ').trim()
   if (opts.subtitle != null) meta.subtitle = String(opts.subtitle).replace(/\s+/g, ' ').trim()
+  // publishing metadata: what EPUB, KDP and the cover read
+  for (const key of ['series', 'language', 'isbn', 'publisher', 'rights']) {
+    if (opts[key] != null) meta[key] = String(opts[key]).replace(/\s+/g, ' ').trim()
+  }
+  if (opts.seriesIndex != null) meta.seriesIndex = String(opts.seriesIndex).trim()
+  if (opts.description != null) {
+    meta.description = String(opts.description).replace(/\r\n?/g, '\n').trim()
+  }
+  if (opts.keywords != null) {
+    meta.keywords = Array.isArray(opts.keywords)
+      ? opts.keywords.map((x) => String(x).trim()).filter(Boolean)
+      : String(opts.keywords).split(/[,，;；\n]/).map((x) => x.trim()).filter(Boolean)
+  }
+  if (opts.manuscript && typeof opts.manuscript === 'object') {
+    meta.manuscript = { ...(meta.manuscript || {}), ...opts.manuscript }
+  }
   writeMeta(full, meta)
   return meta
 }
@@ -545,7 +594,14 @@ function createBook (parent, opts) {
     title,
     subtitle: '',
     series: '',
+    seriesIndex: '',
     author,
+    language: 'zh-CN',
+    isbn: '',
+    publisher: '',
+    rights: '',
+    description: '',
+    keywords: [],
     wordGoal: 0,
     created: now,
     modified: now,
@@ -648,6 +704,138 @@ function listDarlings (dir) {
     .sort((a, b) => b.modified.localeCompare(a.modified))
 }
 
+/* ---------- comments ---------- */
+
+const COVER_TYPES = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+  '.webp': 'image/webp', '.gif': 'image/gif'
+}
+
+// the cover the writer picked, ready for the EPUB package; null when there is
+// none or the file is gone
+function coverPack (dir, meta) {
+  const name = String((meta && meta.cover) || '').trim()
+  if (!safeName(name)) return null
+  const file = safePath(dir, name)
+  if (!file || !fs.existsSync(file)) return null
+  const mediaType = COVER_TYPES[path.extname(name).toLowerCase()]
+  if (!mediaType) return null
+  try {
+    const st = fs.statSync(file)
+    if (!st.isFile() || st.size > 40 * 1024 * 1024) return null
+    return { name, data: fs.readFileSync(file), mediaType }
+  } catch {
+    return null
+  }
+}
+
+function cleanComment (item) {
+  if (!item || typeof item !== 'object') return null
+  const chapterId = String(item.chapterId || '')
+  if (!safeName(chapterId)) return null
+  const quote = String(item.quote || '').slice(0, 2000)
+  const note = String(item.note || '').slice(0, 5000)
+  if (!quote.trim() || !note.trim()) return null
+  return {
+    id: String(item.id || '').slice(0, 80) || 'c-' + crypto.randomUUID(),
+    chapterId,
+    quote,
+    prefix: String(item.prefix || '').slice(0, 80),
+    suffix: String(item.suffix || '').slice(0, 80),
+    start: Math.max(0, Number(item.start) || 0),
+    end: Math.max(0, Number(item.end) || 0),
+    note,
+    resolved: !!item.resolved,
+    createdAt: String(item.createdAt || new Date().toISOString())
+  }
+}
+
+function readComments (dir) {
+  const file = safePath(dir, 'comments.json')
+  const data = file ? readJSON(file, null) : null
+  return Array.isArray(data && data.items) ? data.items.map(cleanComment).filter(Boolean) : []
+}
+
+function writeCommentsFile (dir, items) {
+  const file = safePath(dir, 'comments.json')
+  if (!file) throw new Error('书路径不合法')
+  const clean = items.map(cleanComment).filter(Boolean).slice(0, 5000)
+  try { fs.copyFileSync(file, file + '.bak') } catch {}
+  writeJSON(file, { version: 1, items: clean })
+  return clean
+}
+
+function listComments (dir, chapterToken) {
+  const full = bookDir(dir)
+  const meta = readMeta(full)
+  let items = readComments(full)
+  if (chapterToken != null && String(chapterToken).trim()) {
+    const chapterId = resolveChapter(meta, chapterToken)
+    items = items.filter((c) => c.chapterId === chapterId)
+  }
+  const order = meta.chapterOrder
+  items.sort((a, b) =>
+    (order.indexOf(a.chapterId) < 0 ? 9999 : order.indexOf(a.chapterId)) -
+    (order.indexOf(b.chapterId) < 0 ? 9999 : order.indexOf(b.chapterId)) ||
+    (a.start || 0) - (b.start || 0))
+  return {
+    total: items.length,
+    unresolved: items.filter((c) => !c.resolved).length,
+    comments: items.map((c) => ({ ...c, chapterLabel: bookLabel(meta, c.chapterId) }))
+  }
+}
+
+// an AI can add a note to a quote the writer can see; the anchor is worked out
+// here, never written into the chapter file
+function addComment (dir, opts) {
+  opts = opts || {}
+  const full = bookDir(dir)
+  assertWritable(full)
+  const meta = readMeta(full)
+  const chapterId = resolveChapter(meta, opts.chapter)
+  const file = chapterFile(full, chapterId)
+  let html = ''
+  try { html = fs.readFileSync(file, 'utf8') } catch {}
+  const quote = String(opts.quote || '').trim()
+  const note = String(opts.note || '').trim()
+  if (!quote) throw new Error('缺少要批注的原文 quote')
+  if (!note) throw new Error('缺少批注内容 note')
+  const text = contentText(html)
+  let start = -1
+  const hinted = Number.isInteger(opts.start) ? opts.start : -1
+  if (hinted >= 0 && text.startsWith(quote, hinted)) start = hinted
+  if (start < 0) start = text.indexOf(quote)
+  if (start < 0) throw new Error('这一章里找不到这段原文，请给一段更短、完全一致的 quote')
+  const end = start + quote.length
+  const comment = cleanComment({
+    id: 'c-' + crypto.randomUUID(),
+    chapterId,
+    quote,
+    prefix: text.slice(Math.max(0, start - 40), start),
+    suffix: text.slice(end, end + 40),
+    start,
+    end,
+    note,
+    resolved: false,
+    createdAt: new Date().toISOString()
+  })
+  const items = readComments(full)
+  items.push(comment)
+  writeCommentsFile(full, items)
+  return { comment, chapter: bookLabel(meta, chapterId), total: items.length }
+}
+
+function setCommentResolved (dir, id, resolved) {
+  const full = bookDir(dir)
+  assertWritable(full)
+  const items = readComments(full)
+  const comment = items.find((c) => c.id === String(id))
+  if (!comment) throw new Error('找不到这条批注')
+  comment.resolved = resolved === undefined ? true : !!resolved
+  writeCommentsFile(full, items)
+  return { comment, total: items.length, unresolved: items.filter((c) => !c.resolved).length }
+}
+
 module.exports = {
   MAX_RECENT,
   KIND_LABEL,
@@ -671,6 +859,7 @@ module.exports = {
   contentsLines,
   htmlText,
   textOf,
+  contentText,
   countWords,
   escapeHtml,
   textToHtml,
@@ -702,5 +891,11 @@ module.exports = {
   createBook,
   searchBook,
   bookInfo,
-  listDarlings
+  listDarlings,
+  coverPack,
+  readComments,
+  writeCommentsFile,
+  listComments,
+  addComment,
+  setCommentResolved
 }

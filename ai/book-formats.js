@@ -10,8 +10,9 @@ const crypto = require('node:crypto')
 const zlib = require('node:zlib')
 
 const {
-  kindOfMeta, bookLabel, htmlText, escapeHtml, STORY_KINDS, CONTENTS_SKIP
+  kindOfMeta, bookLabel, htmlText, escapeHtml, STORY_KINDS, CONTENTS_SKIP, countWords
 } = require('./book-core')
+const manuscript = require('./manuscript')
 
 // the same choices the window offers; system keeps the old export defaults
 const FONTS = {
@@ -114,11 +115,25 @@ function bookMarkdown (meta, chapters) {
 }
 
 
+// the papers the PDF dialog offers; width and height in inches, the same
+// numbers Chromium's printToPDF takes
+const PDF_PAPERS = {
+  A4: { w: 8.2677, h: 11.6929, css: 'A4' },
+  Letter: { w: 8.5, h: 11, css: 'Letter' },
+  A5: { w: 5.827, h: 8.268, css: 'A5' },
+  '6x9': { w: 6, h: 9, css: '6in 9in' }
+}
+
 function printHtml (meta, chapters, opts) {
   const font = fontOf(opts && opts.font)
   const fontLink = opts && opts.fontCss
     ? '<link rel="stylesheet" href="' + escapeHtml(opts.fontCss) + '">'
     : ''
+  const paper = PDF_PAPERS[(opts && opts.paper) || 'A4'] || PDF_PAPERS.A4
+  const size = Math.min(18, Math.max(8, Number(opts && opts.fontSize) || 12))
+  const leading = Math.min(2.4, Math.max(1.2, Number(opts && opts.lineHeight) || 1.85))
+  // the title page fills the sheet whatever the paper is
+  const titleHeight = Math.max(110, Math.round(paper.h * 25.4 - 48))
   let body = ''
   for (const id of meta.chapterOrder) {
     const kind = kindOfMeta(meta, id)
@@ -134,30 +149,30 @@ function printHtml (meta, chapters, opts) {
   const subtitle = String(meta.subtitle || '').trim()
   const author = String(meta.author || '').trim()
   return `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+<html lang="${escapeHtml(languageOf(meta))}"><head><meta charset="utf-8">
 ${fontLink}
 <style>
-  @page { size: A4; }
+  @page { size: ${paper.css}; }
   html, body { margin: 0; padding: 0; }
   body { font-family: ${font.stack};
-    font-size: 12pt; line-height: 1.85; color: #111; }
-  .titlepage { height: 245mm; display: flex; flex-direction: column;
+    font-size: ${size}pt; line-height: ${leading}; color: #111; }
+  .titlepage { height: ${titleHeight}mm; display: flex; flex-direction: column;
     align-items: center; justify-content: center; text-align: center; page-break-after: always; }
-  .titlepage h1 { font-size: 28pt; font-weight: 700; margin: 0 0 10mm; letter-spacing: .04em; }
-  .titlepage .sub { font-size: 14pt; font-style: italic; margin: 0 0 22mm; }
-  .titlepage .by { font-size: 12pt; letter-spacing: .2em; }
+  .titlepage h1 { font-size: ${Math.round(size * 2.2)}pt; font-weight: 700; margin: 0 0 10mm; letter-spacing: .04em; }
+  .titlepage .sub { font-size: ${Math.round(size * 1.15)}pt; font-style: italic; margin: 0 0 22mm; }
+  .titlepage .by { font-size: ${size}pt; letter-spacing: .2em; }
   .chapter { page-break-before: always; }
-  .chapter h2 { text-align: center; font-size: 13pt; font-weight: 700;
+  .chapter h2 { text-align: center; font-size: ${Math.round(size * 1.08)}pt; font-weight: 700;
     margin: 34mm 0 12mm; letter-spacing: .2em; }
   .chapter p { text-indent: 2em; margin: 0; white-space: pre-wrap; }
   .chapter.page p { text-indent: 0; }
   .chapter.kind-dedication p, .chapter.kind-epigraph p {
     text-indent: 0; text-align: center; font-style: italic; }
   .chapter.kind-copyright p, .chapter.kind-acknowledgments p, .chapter.kind-about p {
-    text-indent: 2em; font-size: 10.5pt; }
+    text-indent: 2em; font-size: ${Math.max(8, size - 1.5)}pt; }
   .chapter.kind-part h2, .chapter.kind-extra h2, .chapter.kind-epilogue h2 { letter-spacing: .3em; }
   .toc { list-style: none; margin: 0 12mm; padding: 0; }
-  .toc li { margin: 0 0 2.2mm; font-size: 11pt; }
+  .toc li { margin: 0 0 2.2mm; font-size: ${Math.max(8, size - 1)}pt; }
 </style></head><body>
 <section class="titlepage"><h1>${escapeHtml(meta.title || '未命名')}</h1>
 ${subtitle ? '<p class="sub">' + escapeHtml(subtitle) + '</p>' : ''}
@@ -247,11 +262,68 @@ function makeZip (entries) {
   return Buffer.concat([...chunks, cdBuf, end])
 }
 
+// XHTML demands void elements close; a pasted <img> or <hr> is not enough.
+const VOID_TAGS = 'area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr'
+
 function xhtmlFragment (html) {
+  const voidTag = new RegExp('<(' + VOID_TAGS + ')(\\b[^>]*?)(\\/?)>', 'gi')
   return String(html || '')
-    .replace(/<br\s*\/?>/gi, '<br/>')
-    .replace(/<hr\s*\/?>/gi, '<hr/>')
+    .replace(voidTag, (match, tag, attrs) => '<' + tag + attrs.replace(/\/\s*$/, '') + '/>')
     .replace(/&nbsp;/gi, '&#160;')
+    // a bare ampersand is not XML; leave a written entity alone
+    .replace(/&(?!(?:[a-zA-Z][a-zA-Z0-9]*|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;')
+}
+
+// EPUB 3 wants a real language, and KDP checks it against the book.  A book
+// made before the field existed is Chinese, which is what Saga spoke then.
+function languageOf (meta) {
+  const raw = String((meta && meta.language) || 'zh-CN').trim().replace(/_/g, '-')
+  return /^[a-z]{2,3}(-[A-Za-z0-9]{1,8})*$/i.test(raw) ? raw : 'zh-CN'
+}
+
+function keywordsOf (meta) {
+  const raw = meta && meta.keywords
+  const list = Array.isArray(raw) ? raw : String(raw || '').split(/[,，;；\n]/)
+  return list.map((x) => String(x).trim()).filter(Boolean).slice(0, 40)
+}
+
+function isbnOf (meta) {
+  const digits = String((meta && meta.isbn) || '').replace(/[^0-9Xx]/g, '')
+  return /^[0-9]{9}[0-9Xx]$/.test(digits) || /^[0-9]{13}$/.test(digits) ? digits : ''
+}
+
+// KDP's accessibility checks look for these, and a book without them can be
+// flagged even when the text itself is clean.
+function accessibilityMetadata () {
+  return [
+    '<meta property="schema:accessMode">textual</meta>',
+    '<meta property="schema:accessModeSufficient">textual</meta>',
+    '<meta property="schema:accessibilityFeature">structuralNavigation</meta>',
+    '<meta property="schema:accessibilityFeature">tableOfContents</meta>',
+    '<meta property="schema:accessibilityFeature">readingOrder</meta>',
+    '<meta property="schema:accessibilityHazard">none</meta>',
+    '<meta property="schema:accessibilitySummary">Text-only book with a navigable table of contents and chapter-level headings.</meta>'
+  ].join('\n')
+}
+
+// what the export dialog can say after an EPUB is written
+function epubAccessibility (meta, chapters) {
+  const warnings = []
+  if (!String((meta && meta.title) || '').trim()) warnings.push('缺少书名')
+  const rawLanguage = String((meta && meta.language) || '').trim()
+  if (!rawLanguage) warnings.push('未设置语言，已按 zh-CN 导出')
+  else if (languageOf(meta) !== rawLanguage.replace(/_/g, '-')) {
+    warnings.push('语言代码无效，已按 ' + languageOf(meta) + ' 导出')
+  }
+  let images = 0
+  let withoutAlt = 0
+  for (const id of (meta && meta.chapterOrder) || []) {
+    const tags = String(chapters[id] || '').match(/<img\b[^>]*>/gi) || []
+    images += tags.length
+    withoutAlt += tags.filter((tag) => !/\balt\s*=/i.test(tag)).length
+  }
+  if (withoutAlt) warnings.push('有 ' + withoutAlt + ' 张图片缺少 alt 文本')
+  return { warnings, images, imagesWithoutAlt: withoutAlt, language: languageOf(meta) }
 }
 
 function epubCss (font) {
@@ -266,6 +338,8 @@ p { text-indent: 2em; margin: 0; }
 .titlepage h1 { font-size: 2.2em; letter-spacing: 0; margin: 0 0 1em; }
 .titlepage .sub { text-indent: 0; font-style: italic; margin: 0 0 2em; }
 .titlepage .by { text-indent: 0; letter-spacing: .2em; }
+.coverpage { margin: 0; padding: 0; text-align: center; }
+.coverpage img { max-width: 100%; max-height: 100%; }
 `
 }
 
@@ -277,11 +351,29 @@ function epubFiles (meta, chapters, opts) {
   const fontLink = fontHref
     ? '<link rel="stylesheet" href="' + escapeHtml(fontHref) + '" type="text/css"/>'
     : ''
+  const cover = opts && opts.cover && opts.cover.name && opts.cover.data && opts.cover.mediaType
+    ? opts.cover
+    : null
+  const coverHref = cover ? String(cover.name) : ''
   const title = meta.title || '未命名'
   const subtitle = String(meta.subtitle || '').trim()
   const author = String(meta.author || '').trim()
-  const uid = 'urn:uuid:' + crypto.randomUUID()
+  const lang = languageOf(meta)
+  const keywords = keywordsOf(meta)
+  const isbn = isbnOf(meta)
+  const series = String(meta.series || '').trim()
+  const seriesIndex = /^[1-9]\d*$/.test(String(meta.seriesIndex || '').trim()) ? String(meta.seriesIndex).trim() : ''
+  const description = String(meta.description || '').trim()
+  const publisher = String(meta.publisher || '').trim()
+  const rights = String(meta.rights || '').trim()
+  const identifier = isbn ? 'urn:isbn:' + isbn : 'urn:uuid:' + crypto.randomUUID()
   const modified = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+  const seriesMeta = series
+    ? '<meta property="belongs-to-collection" id="series">' + escapeHtml(series) + '</meta>\n' +
+      '<meta refines="#series" property="collection-type">series</meta>' +
+      (seriesIndex ? '\n<meta refines="#series" property="group-position">' + escapeHtml(seriesIndex) + '</meta>' : '')
+    : ''
+  const subjects = keywords.map((word) => '<dc:subject>' + escapeHtml(word) + '</dc:subject>').join('\n')
   const items = []
   for (const id of meta.chapterOrder) {
     if (kindOfMeta(meta, id) === 'contents') continue
@@ -292,45 +384,70 @@ function epubFiles (meta, chapters, opts) {
   })
   const navItems = items.map((item) =>
     '<li><a href="' + item.href + '">' + escapeHtml(item.label) + '</a></li>').join('')
+  const firstStory = items.find((item) => STORY_KINDS.has(item.kind)) || items[0]
+  const landmarkItems = [
+    cover ? '<li><a epub:type="cover" href="cover.xhtml">封面</a></li>' : '',
+    '<li><a epub:type="titlepage" href="title.xhtml">书名页</a></li>',
+    '<li><a epub:type="toc" href="nav.xhtml">目录</a></li>',
+    firstStory ? '<li><a epub:type="bodymatter" href="' + firstStory.href + '">正文</a></li>' : ''
+  ].filter(Boolean).join('')
   const nav = `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="zh-CN" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="${escapeHtml(lang)}" lang="${escapeHtml(lang)}">
 <head><meta charset="utf-8"/><title>目录</title><link rel="stylesheet" href="style.css" type="text/css"/>${fontLink}</head>
-<body><nav epub:type="toc" id="toc"><h1>目录</h1><ol>${navItems}</ol></nav></body></html>`
+<body><nav epub:type="toc" id="toc"><h1>目录</h1><ol>${navItems}</ol></nav>
+<nav epub:type="landmarks" id="landmarks" hidden="hidden"><h2>Landmarks</h2><ol>${landmarkItems}</ol></nav></body></html>`
   const titlePage = `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${escapeHtml(lang)}" lang="${escapeHtml(lang)}">
 <head><meta charset="utf-8"/><title>${escapeHtml(title)}</title><link rel="stylesheet" href="style.css" type="text/css"/>${fontLink}</head>
 <body><section class="titlepage"><h1>${escapeHtml(title)}</h1>
 ${subtitle ? '<p class="sub">' + escapeHtml(subtitle) + '</p>' : ''}
 ${author ? '<p class="by">' + escapeHtml(author) + '</p>' : ''}
 </section></body></html>`
+  const coverPage = cover ? `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="${escapeHtml(lang)}" lang="${escapeHtml(lang)}">
+<head><meta charset="utf-8"/><title>封面</title><link rel="stylesheet" href="style.css" type="text/css"/></head>
+<body><section class="coverpage" epub:type="cover"><img src="${escapeHtml(coverHref)}" alt="${escapeHtml(title)}"/></section></body></html>` : ''
   const manifestItems = items.map((item, index) =>
     '<item id="t' + (index + 1) + '" href="' + item.href + '" media-type="application/xhtml+xml"/>').join('\n')
   const spineItems = items.map((item, index) =>
     '<itemref idref="t' + (index + 1) + '"/>').join('\n')
+  const coverManifest = cover
+    ? '<item id="coverpage" href="cover.xhtml" media-type="application/xhtml+xml"/>\n' +
+      '<item id="cover-image" href="' + escapeHtml(coverHref) + '" media-type="' + escapeHtml(cover.mediaType) + '" properties="cover-image"/>\n'
+    : ''
+  const coverSpine = cover ? '<itemref idref="coverpage"/>\n' : ''
+  const coverMeta = cover ? '<meta name="cover" content="cover-image"/>\n' : ''
   const fontManifest = (fontHref
     ? '<item id="fontcss" href="' + escapeHtml(fontHref) + '" media-type="text/css"/>\n'
     : '') + fontEntries.map((entry, index) =>
     '<item id="font' + (index + 1) + '" href="' + escapeHtml(entry.name) + '" media-type="font/woff2"/>').join('\n')
   const opf = `<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="BookId" xml:lang="zh-CN">
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="BookId" xml:lang="${escapeHtml(lang)}">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-<dc:identifier id="BookId">${uid}</dc:identifier>
+<dc:identifier id="BookId">${escapeHtml(identifier)}</dc:identifier>
 <dc:title>${escapeHtml(title)}</dc:title>
 ${author ? '<dc:creator>' + escapeHtml(author) + '</dc:creator>' : ''}
-<dc:language>zh-CN</dc:language>
+<dc:language>${escapeHtml(lang)}</dc:language>
+${publisher ? '<dc:publisher>' + escapeHtml(publisher) + '</dc:publisher>' : ''}
+${rights ? '<dc:rights>' + escapeHtml(rights) + '</dc:rights>' : ''}
+${description ? '<dc:description>' + escapeHtml(description) + '</dc:description>' : ''}
+${subjects}
+${seriesMeta}
 <meta property="dcterms:modified">${modified}</meta>
+${coverMeta}${accessibilityMetadata()}
 </metadata>
 <manifest>
 <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
 <item id="style" href="style.css" media-type="text/css"/>
 <item id="titlepage" href="title.xhtml" media-type="application/xhtml+xml"/>
-${manifestItems}
+${coverManifest}${manifestItems}
 ${fontManifest}
 </manifest>
 <spine>
-<itemref idref="titlepage"/>
+${coverSpine}<itemref idref="titlepage"/>
 <itemref idref="nav"/>
 ${spineItems}
 </spine>
@@ -345,7 +462,7 @@ ${spineItems}
       name: 'OEBPS/' + item.href,
       data: `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${escapeHtml(lang)}" lang="${escapeHtml(lang)}">
 <head><meta charset="utf-8"/><title>${escapeHtml(item.label)}</title><link rel="stylesheet" href="style.css" type="text/css"/>${fontLink}</head>
 <body><section class="chapter ${cls} kind-${item.kind}"><h1>${escapeHtml(item.label)}</h1>${xhtmlFragment(chapters[item.id] || '')}</section></body></html>`
     }
@@ -357,6 +474,10 @@ ${spineItems}
     { name: 'OEBPS/nav.xhtml', data: nav },
     { name: 'OEBPS/style.css', data: epubCss(font) },
     { name: 'OEBPS/title.xhtml', data: titlePage },
+    ...(cover ? [
+      { name: 'OEBPS/cover.xhtml', data: coverPage },
+      { name: 'OEBPS/' + coverHref, data: cover.data }
+    ] : []),
     ...(fontHref && fontCss ? [{ name: 'OEBPS/' + fontHref, data: fontCss }] : []),
     ...fontEntries.map((entry) => ({ name: 'OEBPS/' + entry.name, data: entry.data })),
     ...pages
@@ -695,6 +816,131 @@ function latexBook (meta, chapters, fontKey) {
 `
 }
 
+/* ---------- standard manuscript format ---------- */
+
+// Saga writes only paragraphs, so each <p> becomes one manuscript paragraph.
+// A line of *** or # is the writer's own scene break; an <hr> is too.
+function manuscriptParas (html) {
+  const source = String(html || '')
+  const out = []
+  const re = /<p\b[^>]*>([\s\S]*?)<\/p>|<hr\b[^>]*\/?>/gi
+  let match
+  let found = false
+  while ((match = re.exec(source))) {
+    found = true
+    if (match[1] === undefined) {
+      out.push({ sceneBreak: true })
+      continue
+    }
+    const text = htmlText(match[1])
+    if (!text.trim()) continue
+    if (/^(?:\*\s*){3,}$|^#+$/.test(text.trim())) {
+      out.push({ sceneBreak: true })
+      continue
+    }
+    for (const line of text.split('\n')) {
+      const clean = line.trim()
+      if (clean) out.push({ runs: [{ text: clean }] })
+    }
+  }
+  if (!found) {
+    for (const line of htmlText(source).split('\n')) {
+      const clean = line.trim()
+      if (clean) out.push({ runs: [{ text: clean }] })
+    }
+  }
+  return out
+}
+
+const MANUSCRIPT_SKIP = new Set([
+  'copyright', 'dedication', 'contents', 'opening', 'foreword',
+  'afterword', 'acknowledgments', 'about'
+])
+
+// What a submission carries: the story, parts and an epigraph.  Front and
+// back pages stay out, as agents ask.  An unwritten page stays out too: a
+// blank chapter should not become a blank sheet in the manuscript.
+function manuscriptSections (meta, chapters) {
+  const raw = []
+  for (const id of meta.chapterOrder) {
+    const kind = kindOfMeta(meta, id)
+    if (MANUSCRIPT_SKIP.has(kind)) continue
+    raw.push({ id, kind, paras: manuscriptParas(chapters[id] || '') })
+  }
+  // A page enters the manuscript only when it has words; a part also stays
+  // when a written chapter follows it.  Numbering then comes from this
+  // shorter list, so unwritten template pages leave no gaps.
+  const keep = raw.map(() => false)
+  for (let i = 0; i < raw.length; i++) {
+    const section = raw[i]
+    if (section.kind !== 'part') {
+      keep[i] = section.paras.length > 0
+      continue
+    }
+    let writing = section.paras.length > 0
+    for (let j = i + 1; j < raw.length && raw[j].kind !== 'part'; j++) {
+      if (raw[j].paras.length) { writing = true; break }
+    }
+    keep[i] = writing
+  }
+  const included = raw.filter((section, index) => keep[index])
+  const labelMeta = { ...meta, chapterOrder: included.map((section) => section.id) }
+  return included.map((section) => {
+    if (section.kind === 'epigraph') {
+      return { kind: 'epigraph', heading: '', paras: section.paras }
+    }
+    if (section.kind === 'part') {
+      return { kind: 'part', heading: bookLabel(labelMeta, section.id), partTitle: '', paras: section.paras }
+    }
+    return { kind: 'chapter', heading: bookLabel(labelMeta, section.id), paras: section.paras }
+  })
+}
+
+function manuscriptModel (meta, chapters, opts) {
+  opts = opts || {}
+  const lang = languageOf(meta)
+  const sections = manuscriptSections(meta, chapters).map((section) => {
+    const words = section.paras.reduce((n, p) => {
+      if (p.sceneBreak || !p.runs) return n
+      return n + countWords(p.runs.map((r) => r.text || '').join(' '))
+    }, 0)
+    return { ...section, words }
+  })
+  const words = sections.reduce((n, s) => n + s.words, 0)
+  const byline = String(opts.byline != null ? opts.byline : (meta.author || '')).trim()
+  const contactName = String(opts.contactName != null ? opts.contactName : byline).trim()
+  const addressLines = String(opts.address || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const lines = [...addressLines, String(opts.phone || '').trim(), String(opts.email || '').trim()].filter(Boolean)
+  const shown = manuscript.roundWords(words)
+  const numeric = shown.toLocaleString(lang.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en-US')
+  const title = String(meta.title || '未命名').trim()
+  const paper = String(opts.paper || (lang.toLowerCase().startsWith('zh') ? 'A4' : 'Letter'))
+  return {
+    title,
+    byline,
+    headerName: String(opts.headerName || manuscript.surnameOf(byline)).trim(),
+    headerTitle: String(opts.headerTitle || title.toLocaleUpperCase(lang)).trim(),
+    contact: { name: contactName, lines },
+    wordsText: lang.toLowerCase().startsWith('zh') ? '约 ' + numeric + ' 字' : 'about ' + numeric + ' words',
+    byText: byline ? (lang.toLowerCase().startsWith('zh') ? byline : 'by ' + byline) : '',
+    endText: opts.end === false ? '' : (lang.toLowerCase().startsWith('zh') ? '完' : 'END'),
+    font: opts.font === 'courier' ? 'courier' : 'times',
+    paper: paper === 'A4' ? 'A4' : 'Letter',
+    lang,
+    short: false,
+    sections,
+    words
+  }
+}
+
+function manuscriptHtml (model, opts) {
+  return manuscript.html(model, opts)
+}
+
+function manuscriptDocxEntries (model) {
+  return manuscript.docxEntries(model)
+}
+
 /* ---------- a paperback for KDP ---------- */
 
 const KDP_TRIMS = {
@@ -710,6 +956,9 @@ function kdpInteriorHtml (meta, chapters, opts) {
   const fontLink = opts && opts.fontCss
     ? '<link rel="stylesheet" href="' + escapeHtml(opts.fontCss) + '">'
     : ''
+  const trim = (opts && opts.trim) || KDP_TRIMS['6x9']
+  const storyBreak = opts && opts.fallback ? 'page' : 'recto'
+  const lang = languageOf(meta)
   const title = escapeHtml(meta.title || '未命名')
   const subtitle = String(meta.subtitle || '').trim()
   const author = String(meta.author || '').trim()
@@ -717,23 +966,52 @@ function kdpInteriorHtml (meta, chapters, opts) {
   for (const id of meta.chapterOrder) {
     const kind = kindOfMeta(meta, id)
     if (kind === 'contents') continue
-    body += '<section class="chapter kind-' + kind + (STORY_KINDS.has(kind) ? ' story' : ' page') +
+    const story = STORY_KINDS.has(kind)
+    body += '<section class="chapter ' + (story ? 'story' : 'page') + ' kind-' + kind +
       '"><h2>' + escapeHtml(bookLabel(meta, id)) + '</h2>' + String(chapters[id] || '') + '</section>'
   }
   return `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+<html lang="${escapeHtml(lang)}"><head><meta charset="utf-8">
 ${fontLink}
 <style>
+  /* Paged.js lays this out as real pages: page numbers, running heads,
+     chapter openings on a right-hand page, and blank versos where needed. */
+  @page {
+    size: ${trim.w}in ${trim.h}in;
+    margin: 0.75in;
+    @top-left { content: string(booktitle); font: 8pt ${font.stack}; color: #555; letter-spacing: .08em; }
+    @top-right { content: string(chapter); font: 8pt ${font.stack}; color: #555; letter-spacing: .08em; }
+    @bottom-center { content: counter(page); font: 9pt ${font.stack}; color: #333; }
+  }
+  @page:left {
+    margin-left: 0.75in; margin-right: 0.875in;
+    @top-right { content: none; }
+    @bottom-center { content: none; }
+    @bottom-left { content: counter(page); font: 9pt ${font.stack}; color: #333; }
+  }
+  @page:right {
+    margin-left: 0.875in; margin-right: 0.75in;
+    @top-left { content: none; }
+    @bottom-center { content: none; }
+    @bottom-right { content: counter(page); font: 9pt ${font.stack}; color: #333; }
+  }
+  @page title { @top-left { content: none; } @top-right { content: none; } @bottom-left { content: none; } @bottom-right { content: none; } }
+  @page front { @top-left { content: none; } @top-right { content: none; } @bottom-left { content: none; } @bottom-right { content: none; } @bottom-center { content: none; } }
+  @page:blank { @top-left { content: none; } @top-right { content: none; } @bottom-left { content: none; } @bottom-right { content: none; } @bottom-center { content: none; } }
   html, body { margin: 0; padding: 0; }
-  body { font-family: ${font.stack};
-    font-size: 11pt; line-height: 1.6; color: #111; }
-  .titlepage { text-align: center; padding-top: 2.2in; page-break-after: always; }
-  .titlepage h1 { font-size: 24pt; font-weight: 700; margin: 0 0 12pt; letter-spacing: .02em; }
+  body { font-family: ${font.stack}; font-size: 11pt; line-height: 1.6; color: #111; }
+  p { orphans: 2; widows: 2; }
+  .titlepage { page: title; text-align: center; padding-top: 2.2in; break-after: page; }
+  .titlepage h1 { font-size: 24pt; font-weight: 700; margin: 0 0 12pt; letter-spacing: .02em;
+    string-set: booktitle content(); }
   .titlepage .sub { font-size: 13pt; font-style: italic; margin: 0 0 24pt; }
   .titlepage .by { font-size: 12pt; letter-spacing: .18em; }
-  .chapter { page-break-before: always; }
+  .chapter { break-before: page; }
+  .chapter.story { break-before: ${storyBreak}; }
+  .chapter.page { page: front; }
   .chapter h2 { text-align: center; font-size: 14pt; font-weight: 700;
     margin: 0 0 18pt; letter-spacing: .12em; }
+  .chapter.story h2 { string-set: chapter content(); }
   .chapter p { text-indent: 2em; margin: 0; white-space: pre-wrap; }
   .chapter.page p { text-indent: 0; }
   .kind-dedication p, .kind-epigraph p { text-align: center; font-style: italic; }
@@ -761,45 +1039,96 @@ function kdpEstimateScript (trim) {
   })()`
 }
 
-function kdpCoverHtml (meta, pages, spine, trim) {
+function kdpCoverHtml (meta, pages, spine, trim, opts) {
+  const guides = !!(opts && opts.guides)
   const bleed = 0.125
+  const safe = 0.25
   const fullW = trim.w * 2 + spine + bleed * 2
   const fullH = trim.h + bleed * 2
   const title = escapeHtml(meta.title || '未命名')
+  const subtitle = escapeHtml(String(meta.subtitle || '').trim())
   const author = escapeHtml(String(meta.author || '').trim())
-  const spineText = pages >= 100 && spine >= 0.25 && author
+  const series = String(meta.series || '').trim()
+  const seriesIndex = String(meta.seriesIndex || '').trim()
+  const seriesLine = escapeHtml(series ? series + (seriesIndex ? ' · ' + seriesIndex : '') : '')
+  const blurb = escapeHtml(String(meta.description || '').trim()).replace(/\r?\n/g, '<br>')
+  const blurbSize = blurb.length > 1200 ? 8 : blurb.length > 700 ? 9 : 10
+  const spineText = pages >= 100 && spine >= 0.25
+  const spineLine = escapeHtml([meta.title || '', String(meta.author || '').trim()].filter(Boolean).join(' · '))
+  const titleChars = Array.from(String(meta.title || '未命名')).length
+  const titleSize = titleChars > 160 ? 13 : titleChars > 90 ? 16 : titleChars > 48 ? 19 : titleChars > 24 ? 22 : 28
+  const guideLayer = !guides ? '' : `
+  <div class="guide trim-guide"></div>
+  <div class="guide safe-guide"></div>
+  <div class="guide spine-guide"></div>
+  <div class="guide-label back-label">封底 · ${trim.w} × ${trim.h} in</div>
+  <div class="guide-label spine-label">书脊 ${spine.toFixed(3)} in</div>
+  <div class="guide-label front-label">封面</div>`
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <style>
   @page { size: ${fullW}in ${fullH}in; margin: 0; }
   html, body { margin: 0; padding: 0; width: ${fullW}in; height: ${fullH}in; overflow: hidden; }
-  body { font-family: Georgia, "Times New Roman", "Songti SC", "SimSun", serif; color: #1c1c1c; }
-  .cover { position: relative; width: 100%; height: 100%; background: #fbfaf7; }
-  .panel { position: absolute; top: ${bleed}in; height: ${trim.h}in;
-    border: 1px dashed #b9b2a5; box-sizing: border-box; }
-  .back { left: ${bleed}in; width: ${trim.w}in; }
-  .spine { left: ${bleed + trim.w}in; width: ${spine}in; background: #f3efe6; }
-  .front { left: ${bleed + trim.w + spine}in; width: ${trim.w}in; }
-  .label { position: absolute; top: 12pt; left: 0; right: 0; text-align: center;
-    color: #a39d92; font-size: 9pt; letter-spacing: 2pt; }
-  .front h1 { position: absolute; left: 0; right: 0; top: 33%; text-align: center;
-    font-size: 26pt; margin: 0; letter-spacing: .04em; }
-  .front .by { position: absolute; left: 0; right: 0; top: 55%; text-align: center;
-    font-size: 12pt; letter-spacing: .2em; }
-  .spine .s { position: absolute; inset: 0; display: flex; align-items: center;
-    justify-content: center; writing-mode: vertical-rl; font-size: 10pt; letter-spacing: .12em; }
-  .notes { position: absolute; left: 24pt; right: 24pt; bottom: 28pt; text-align: center;
-    color: #8f8a80; font-size: 8.5pt; line-height: 1.8; }
-  .trim { position: absolute; inset: ${bleed}in; border: 1px solid #d8d3c9; pointer-events: none; }
+  body { font-family: Georgia, "Times New Roman", "Songti SC", "SimSun", serif; color: #1d1a16; }
+  .cover { position: relative; width: 100%; height: 100%; background: #f6f1e7; }
+  .panel { position: absolute; top: ${bleed}in; height: ${trim.h}in; overflow: hidden; }
+  .back { left: ${bleed}in; width: ${trim.w}in; background: #efe8da; }
+  .spine { left: ${bleed + trim.w}in; width: ${spine}in; background: #e6dcc9; }
+  .front { left: ${bleed + trim.w + spine}in; width: ${trim.w}in; background: #f6f1e7; }
+
+  .front-inner { position: absolute; left: 0.45in; right: 0.45in; top: 0.42in; bottom: 0.5in;
+    display: flex; flex-direction: column; align-items: center; text-align: center; }
+  .series { margin: 0 0 auto; color: #7c7364; font-size: 8.5pt; letter-spacing: .22em;
+    text-transform: uppercase; }
+  .front h1 { margin: 0; max-width: 100%; font-size: ${titleSize}pt; line-height: 1.16;
+    font-weight: 700; letter-spacing: .03em; overflow-wrap: break-word; }
+  .front .sub { margin: 0.16in 0 0; max-width: 92%; font-size: 12pt; font-style: italic;
+    color: #51493e; line-height: 1.4; }
+  .front .rule { width: 0.72in; margin: 0.26in 0; border-top: 1px solid #b3a690; }
+  .front .by { margin: auto 0 0; font-size: 12pt; letter-spacing: .18em; }
+
+  .spine .s { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    writing-mode: vertical-rl; text-orientation: mixed; font-size: 10pt; letter-spacing: .12em; }
+  .spine .s.series { color: #7c7364; font-size: 8pt; letter-spacing: .18em; }
+
+  .back-inner { position: absolute; left: 0.45in; right: 0.45in; top: 0.45in; bottom: 1.55in;
+    overflow: hidden; }
+  .blurb { font-size: ${blurbSize}pt; line-height: 1.7; color: #3a342b; }
+  .blurb:empty { display: none; }
+  .barcode { position: absolute; right: 0.25in; bottom: 0.25in; width: 2in; height: 1.2in;
+    background: #fff; }
+  .barcode span { position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; color: #a39d92; font: 8pt/1.4 "Segoe UI", sans-serif; letter-spacing: .08em; }
+
+  .guide { position: absolute; pointer-events: none; }
+  .trim-guide { left: ${bleed}in; top: ${bleed}in; width: ${trim.w * 2 + spine}in; height: ${trim.h}in;
+    border: 1px dashed rgba(90, 70, 40, .55); }
+  .safe-guide { left: ${bleed + safe}in; top: ${bleed + safe}in;
+    width: ${trim.w * 2 + spine - safe * 2}in; height: ${trim.h - safe * 2}in;
+    border: 1px dashed rgba(90, 70, 40, .3); }
+  .spine-guide { left: ${bleed + trim.w}in; top: ${bleed}in; width: ${spine}in; height: ${trim.h}in;
+    border-left: 1px solid rgba(90, 70, 40, .28); border-right: 1px solid rgba(90, 70, 40, .28); }
+  .guide-label { position: absolute; top: ${bleed + 0.08}in; color: #8f8779;
+    font: 7pt/1 "Segoe UI", sans-serif; letter-spacing: .08em; }
+  .back-label { left: ${bleed + 0.1}in; }
+  .spine-label { left: ${bleed + trim.w + 0.04}in; }
+  .front-label { left: ${bleed + trim.w + spine + 0.1}in; }
 </style></head><body><div class="cover">
-<div class="trim"></div>
-<div class="panel back"><div class="label">封底</div><div class="notes">
-封面模板 · ${trim.w} × ${trim.h} 英寸<br>
-内页 ${pages} 页 · 书脊约 ${spine.toFixed(3)} 英寸<br>
-四周留出 0.125 英寸出血位，请整页替换为你的封面图
-</div></div>
-<div class="panel spine"><div class="label">书脊</div>${spineText ? '<div class="s">' + title + (author ? ' · ' + author : '') + '</div>' : ''}</div>
-<div class="panel front"><div class="label">封面</div><h1>${title}</h1>${author ? '<div class="by">' + author + '</div>' : ''}</div>
+<div class="panel back">
+  <div class="back-inner"><div class="blurb">${blurb}</div></div>
+  <div class="barcode">${guides ? '<span>条码区 2 × 1.2 in</span>' : ''}</div>
+</div>
+<div class="panel spine">${spineText ? '<div class="s">' + spineLine + '</div>' : ''}</div>
+<div class="panel front">
+  <div class="front-inner">
+    ${seriesLine ? '<div class="series">' + seriesLine + '</div>' : '<div class="series"></div>'}
+    <h1>${title}</h1>
+    ${subtitle ? '<p class="sub">' + subtitle + '</p>' : ''}
+    <div class="rule"></div>
+    ${author ? '<div class="by">' + author + '</div>' : ''}
+  </div>
+</div>
+${guideLayer}
 </div></body></html>`
 }
 
@@ -819,10 +1148,15 @@ module.exports = {
   bookText,
   bookMarkdown,
   printHtml,
+  PDF_PAPERS,
   crc32,
   makeZip,
   xhtmlFragment,
   epubFiles,
+  epubAccessibility,
+  languageOf,
+  keywordsOf,
+  isbnOf,
   docxParagraphs,
   docxRun,
   docxPara,
@@ -836,6 +1170,11 @@ module.exports = {
   odtFiles,
   latexEscape,
   latexBook,
+  manuscriptParas,
+  manuscriptSections,
+  manuscriptModel,
+  manuscriptHtml,
+  manuscriptDocxEntries,
   KDP_TRIMS,
   KDP_PAPER,
   kdpInteriorHtml,

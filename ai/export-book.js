@@ -11,7 +11,8 @@ const { runHeadless } = require('./launcher')
 const FORMATS = {
   txt: '.txt', md: '.md', markdown: '.md', html: '.html',
   epub: '.epub', docx: '.docx', odt: '.odt', rtf: '.rtf',
-  tex: '.tex', latex: '.tex', pdf: '.pdf'
+  tex: '.tex', latex: '.tex', pdf: '.pdf',
+  manuscript: '.docx', 'manuscript-pdf': '.pdf'
 }
 
 async function exportBook (bookPath, opts) {
@@ -36,7 +37,22 @@ async function exportBook (bookPath, opts) {
     if (!formats.KDP_TRIMS[trim]) throw new Error('开本只能是 ' + Object.keys(formats.KDP_TRIMS).join(' / '))
     const paper = String(opts.paper || 'white')
     if (paper !== 'white' && paper !== 'cream') throw new Error('纸张只能是 white 或 cream')
-    return runHeadless({ kind: 'kdp', book: book.dir, outDir, trim, paper })
+    return runHeadless({ kind: 'kdp', book: book.dir, outDir, trim, paper, guides: !!opts.guides })
+  }
+
+  if (format === 'manuscript' || format === 'manuscript-pdf') {
+    const out = opts.out
+      ? path.resolve(opts.out)
+      : path.join(path.dirname(book.dir), title + '-投稿稿' + (format === 'manuscript' ? '.docx' : '.pdf'))
+    fs.mkdirSync(path.dirname(out), { recursive: true })
+    const choices = { ...(book.meta.manuscript || {}) }
+    const model = formats.manuscriptModel(book.meta, book.chapters, choices)
+    if (format === 'manuscript') {
+      const entries = formats.manuscriptDocxEntries(model).map((entry) => ({ name: entry.path, data: entry.content }))
+      fs.writeFileSync(out, formats.makeZip(entries))
+      return { ok: true, file: out, words: model.words, pages: null }
+    }
+    return runHeadless({ kind: 'manuscript', book: book.dir, out, options: choices })
   }
 
   const ext = FORMATS[format]
@@ -52,7 +68,7 @@ async function exportBook (bookPath, opts) {
   else if (format === 'html') data = formats.htmlBook(book.meta, book.chapters)
   else if (format === 'rtf') data = formats.rtfBook(book.meta, book.chapters)
   else if (format === 'tex') data = formats.latexBook(book.meta, book.chapters)
-  else if (format === 'epub') data = formats.makeZip(formats.epubFiles(book.meta, book.chapters))
+  else if (format === 'epub') data = formats.makeZip(formats.epubFiles(book.meta, book.chapters, { cover: core.coverPack(book.dir, book.meta) }))
   else if (format === 'docx') data = formats.makeZip(formats.docxFiles(book.meta, book.chapters))
   else if (format === 'odt') data = formats.makeZip(formats.odtFiles(book.meta, book.chapters))
   else throw new Error('不支持的格式：' + raw)

@@ -32,10 +32,12 @@ const externalAi = resourcesAi && fs.existsSync(path.join(resourcesAi, 'book-for
   ? resourcesAi
   : bundledAi
 const {
-  fontOf, bookText, bookMarkdown, makeZip, epubFiles, docxFiles, htmlBook,
-  rtfBook, odtFiles, latexBook, printHtml,
-  KDP_TRIMS, KDP_PAPER, kdpInteriorHtml, kdpEstimateScript, kdpCoverHtml, pdfPageCount
+  fontOf, bookText, bookMarkdown, makeZip, epubFiles, epubAccessibility, docxFiles, htmlBook,
+  rtfBook, odtFiles, latexBook, printHtml, PDF_PAPERS,
+  manuscriptModel, manuscriptHtml, manuscriptDocxEntries,
+  KDP_TRIMS, KDP_PAPER, kdpInteriorHtml, kdpCoverHtml, pdfPageCount
 } = require(path.join(aiDir, 'book-formats'))
+const bookCore = require(path.join(aiDir, 'book-core'))
 
 let win = null
 let currentDir = null      // the opened book's folder; the only folder we ever write in
@@ -192,7 +194,15 @@ async function loadBook (dir) {
     if (!file) return
     try { chapters[chId] = await fsp.readFile(file, 'utf8') } catch { chapters[chId] = '' }
   }))
-  return { dir, name: path.basename(dir), meta, chapters }
+  return { dir, name: path.basename(dir), meta, chapters, comments: loadComments(dir) }
+}
+
+// 批注 live beside the book, not in the chapter HTML: a chapter file holds
+// only the writer's words.
+function loadComments (dir) {
+  const file = safePath(dir, 'comments.json')
+  const data = file ? readJSON(file, null) : null
+  return Array.isArray(data && data.items) ? data.items : []
 }
 
 async function openBook (dir) {
@@ -390,13 +400,17 @@ async function runHeadlessExport () {
     if (req.kind === 'pdf') {
       if (!req.out) throw new Error('没有给出 PDF 输出路径')
       fs.mkdirSync(path.dirname(req.out), { recursive: true })
+      const paper = PDF_PAPERS[req.paper] || PDF_PAPERS.A4
       const pdf = await htmlToPdf(printHtml(data.meta, data.chapters, {
         font: req.font,
-        fontCss: fontsCssUrl()
+        fontCss: fontsCssUrl(),
+        paper: req.paper,
+        fontSize: req.fontSize,
+        lineHeight: req.lineHeight
       }), {
         print: {
           printBackground: true,
-          pageSize: 'A4',
+          pageSize: { width: paper.w, height: paper.h },
           margins: { top: 0.75, bottom: 0.75, left: 0.75, right: 0.75 },
           displayHeaderFooter: true,
           headerTemplate: '<span></span>',
@@ -408,45 +422,47 @@ async function runHeadlessExport () {
     } else if (req.kind === 'kdp') {
       if (!req.outDir) throw new Error('没有给出 KDP 输出文件夹')
       fs.mkdirSync(req.outDir, { recursive: true })
-      const trim = KDP_TRIMS[req.trim] || KDP_TRIMS['6x9']
-      const paper = req.paper === 'cream' ? 'cream' : 'white'
       const base = plainName(data.meta.title || '未命名')
       const interiorFile = path.join(req.outDir, base + '-内页.pdf')
-      const coverFile = path.join(req.outDir, base + '-封面模板.pdf')
-
-      const interior = await htmlToPdf(kdpInteriorHtml(data.meta, data.chapters, {
+      const coverFile = path.join(req.outDir, base + '-封面.pdf')
+      const made = await buildKdpPair(data.meta, data.chapters, {
+        trim: req.trim,
+        paper: req.paper,
         font: req.font,
-        fontCss: fontsCssUrl()
-      }), {
-        measure: kdpEstimateScript(trim),
-        print: {
-          printBackground: true,
-          // Electron 43 reads a custom page size in inches, not microns
-          pageSize: { width: trim.w, height: trim.h },
-          margins: { top: 0.75, bottom: 0.75, left: 0.875, right: 0.875 },
-          displayHeaderFooter: true,
-          headerTemplate: '<span></span>',
-          footerTemplate: '<div style="width:100%;text-align:center;font-size:9px;color:#555;"><span class="pageNumber"></span></div>'
-        }
+        guides: !!req.guides
       })
-      await fsp.writeFile(interiorFile, interior.buffer)
-      const pages = pdfPageCount(interior.buffer) || interior.estimate || 1
-      const spine = Math.round(pages * KDP_PAPER[paper] * 1000) / 1000
-
-      const cover = await htmlToPdf(kdpCoverHtml(data.meta, pages, spine, trim), {
-        print: {
-          printBackground: true,
-          preferCSSPageSize: true,
-          margins: { top: 0, bottom: 0, left: 0, right: 0 }
+      await fsp.writeFile(interiorFile, made.interior)
+      await fsp.writeFile(coverFile, made.cover)
+      result = {
+        ok: true,
+        interior: interiorFile,
+        cover: coverFile,
+        pages: made.pages,
+        spine: made.spine,
+        warning: made.warning
+      }
+    } else if (req.kind === 'manuscript') {
+      if (!req.out) throw new Error('没有给出输出路径')
+      fs.mkdirSync(path.dirname(req.out), { recursive: true })
+      const model = manuscriptModel(data.meta, data.chapters, req.options || {})
+      if (String(req.out).toLowerCase().endsWith('.docx')) {
+        const entries = manuscriptDocxEntries(model).map((entry) => ({ name: entry.path, data: entry.content }))
+        await fsp.writeFile(req.out, makeZip(entries))
+        result = { ok: true, file: req.out, words: model.words, pages: null }
+      } else {
+        let pages = null
+        try {
+          const made = await manuscriptPdfBuffer(model)
+          await fsp.writeFile(req.out, made.pdf)
+          pages = made.pages
+        } catch (err) {
+          logLine('manuscript paged failed: ' + (err && err.message ? err.message : err))
+          const made = await manuscriptFallbackPdf(model)
+          await fsp.writeFile(req.out, made.buffer)
+          pages = pdfPageCount(made.buffer) || null
         }
-      })
-      await fsp.writeFile(coverFile, cover.buffer)
-      const warning = pages > 828
-        ? '超过 KDP 单册 828 页上限'
-        : pages < 24
-          ? '少于 KDP 最少 24 页'
-          : ''
-      result = { ok: true, interior: interiorFile, cover: coverFile, pages, spine, warning }
+        result = { ok: true, file: req.out, words: model.words, pages }
+      }
     } else {
       throw new Error('未知的导出类型：' + req.kind)
     }
@@ -760,6 +776,192 @@ ipcMain.handle('book:title', async (_e, chId, title) => {
   await writeFileDurable(file, JSON.stringify(meta, null, 2))
   currentMeta = meta
   return true
+})
+
+// publishing metadata lives in book.json, where EPUB, KDP and the cover read
+// it.  The fields the editor does not know are kept as they came.
+ipcMain.handle('book:meta', async (_e, patch) => {
+  if (!currentDir || !currentMeta) throw new Error('没有打开的书')
+  const file = safePath(currentDir, 'book.json')
+  if (!file) throw new Error('书路径不合法')
+  const meta = readJSON(file, null)
+  if (!meta || !Array.isArray(meta.chapterOrder)) throw new Error('book.json 读不出来')
+  const p = patch && typeof patch === 'object' ? patch : {}
+  if (p.title != null) {
+    const title = String(p.title).replace(/\s+/g, ' ').trim()
+    if (!title) throw new Error('书名不能为空')
+    meta.title = title
+  }
+  for (const key of ['subtitle', 'author', 'series', 'language', 'isbn', 'publisher', 'rights']) {
+    if (p[key] != null) meta[key] = String(p[key]).replace(/\s+/g, ' ').trim()
+  }
+  if (p.seriesIndex != null) meta.seriesIndex = String(p.seriesIndex).trim()
+  if (p.description != null) {
+    meta.description = String(p.description).replace(/\r\n?/g, '\n').trim()
+  }
+  if (p.keywords != null) {
+    meta.keywords = Array.isArray(p.keywords)
+      ? p.keywords.map((x) => String(x).trim()).filter(Boolean)
+      : String(p.keywords).split(/[,，;；\n]/).map((x) => x.trim()).filter(Boolean)
+  }
+  if (p.manuscript && typeof p.manuscript === 'object') {
+    const m = p.manuscript
+    const keep = {}
+    for (const key of ['byline', 'headerName', 'headerTitle', 'contactName', 'address', 'phone', 'email', 'font', 'paper']) {
+      if (m[key] != null) keep[key] = String(m[key]).trim()
+    }
+    if (m.end != null) keep.end = !!m.end
+    meta.manuscript = { ...(meta.manuscript || {}), ...keep }
+  }
+  meta.modified = new Date().toISOString()
+  try { fs.copyFileSync(file, file + '.bak') } catch {}
+  await writeFileDurable(file, JSON.stringify(meta, null, 2))
+  currentMeta = meta
+  // the home page's recent row should say the new name too
+  if (p.title != null) {
+    try {
+      const s = readJSON(settingsFile(), {})
+      writeJSON(settingsFile(), rememberBook(s, currentDir, meta.title || path.basename(currentDir)))
+    } catch {}
+  }
+  return meta
+})
+
+// the cover lives in the book folder beside book.json; EPUB carries the bytes
+const COVER_TYPES = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+  '.webp': 'image/webp', '.gif': 'image/gif'
+}
+
+function coverDataUrl (file, mediaType) {
+  return 'data:' + mediaType + ';base64,' + fs.readFileSync(file).toString('base64')
+}
+
+ipcMain.handle('book:coverPick', async () => {
+  requireBook()
+  const picked = await dialog.showOpenDialog(win, {
+    title: '选择封面图片',
+    properties: ['openFile'],
+    filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'] }]
+  })
+  if (picked.canceled || !picked.filePaths.length) return { canceled: true }
+  const source = picked.filePaths[0]
+  const ext = path.extname(source).toLowerCase()
+  const mediaType = COVER_TYPES[ext]
+  if (!mediaType) throw new Error('只支持 JPG、PNG、WebP 或 GIF 图片')
+  let st
+  try { st = fs.statSync(source) } catch { throw new Error('读不到这张图片') }
+  if (!st.isFile()) throw new Error('请选择一张图片文件')
+  if (st.size > 20 * 1024 * 1024) throw new Error('封面图片太大（最大 20 MB）')
+  const name = 'cover-' + Date.now() + ext
+  const dest = safePath(currentDir, name)
+  if (!dest) throw new Error('书路径不合法')
+  fs.copyFileSync(source, dest)
+  const meta = readMeta()
+  meta.cover = name
+  meta.modified = new Date().toISOString()
+  const metaFile = safePath(currentDir, 'book.json')
+  try { fs.copyFileSync(metaFile, metaFile + '.bak') } catch {}
+  await writeFileDurable(metaFile, JSON.stringify(meta, null, 2))
+  currentMeta = meta
+  return { meta, cover: { name, url: coverDataUrl(dest, mediaType) } }
+})
+
+ipcMain.handle('book:coverData', async () => {
+  if (!currentDir || !currentMeta) return null
+  const pack = bookCore.coverPack(currentDir, currentMeta)
+  if (!pack) return null
+  return {
+    name: pack.name,
+    url: 'data:' + pack.mediaType + ';base64,' + pack.data.toString('base64')
+  }
+})
+
+ipcMain.handle('book:coverClear', async () => {
+  requireBook()
+  const meta = readMeta()
+  if (!meta.cover) return meta
+  delete meta.cover
+  meta.modified = new Date().toISOString()
+  const metaFile = safePath(currentDir, 'book.json')
+  try { fs.copyFileSync(metaFile, metaFile + '.bak') } catch {}
+  await writeFileDurable(metaFile, JSON.stringify(meta, null, 2))
+  currentMeta = meta
+  return meta
+})
+
+// a bulk rewrite (find and replace) leaves the chapter as it was in darlings/
+ipcMain.handle('chapter:backup', async (_e, chId, tag) => {
+  requireBook()
+  if (!safeName(chId)) throw new Error('章节名不合法')
+  if (!currentMeta.chapterOrder.includes(chId)) throw new Error('章节不在书里')
+  const source = safePath(currentDir, 'chapters', chId + '.html')
+  if (!source) throw new Error('章节路径不合法')
+  let html = ''
+  try { html = fs.readFileSync(source, 'utf8') } catch { return null }
+  if (!html.replace(/<[^>]*>/g, '').trim()) return null
+  const darlings = safePath(currentDir, 'darlings')
+  if (!darlings) throw new Error('书路径不合法')
+  fs.mkdirSync(darlings, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const cleanTag = String(tag || 'backup').replace(/[^a-z0-9-]/gi, '').slice(0, 24) || 'backup'
+  let name = stamp + '-' + chId + '-' + cleanTag + '.html'
+  if (fs.existsSync(path.join(darlings, name))) {
+    name = stamp + '-' + chId + '-' + cleanTag + '-' + Math.random().toString(36).slice(2, 6) + '.html'
+  }
+  const dest = safePath(currentDir, 'darlings', name)
+  if (!dest) throw new Error('回收路径不合法')
+  await writeFileDurable(dest, html)
+  return 'darlings/' + name
+})
+
+// 批注 are kept beside the book, never inside a chapter file.
+let commentsWriteChain = Promise.resolve()
+ipcMain.handle('comments:write', async (_e, items) => {
+  if (!currentDir || !currentMeta) throw new Error('没有打开的书')
+  if (!Array.isArray(items)) throw new Error('批注数据不合法')
+  const clean = items.slice(0, 5000).map((item) => {
+    if (!item || typeof item !== 'object') return null
+    const chapterId = String(item.chapterId || '')
+    if (!safeName(chapterId)) return null
+    const quote = String(item.quote || '').slice(0, 2000)
+    const note = String(item.note || '').slice(0, 5000)
+    if (!quote.trim() || !note.trim()) return null
+    return {
+      id: String(item.id || '').slice(0, 80) || 'c-' + crypto.randomUUID(),
+      chapterId,
+      quote,
+      prefix: String(item.prefix || '').slice(0, 80),
+      suffix: String(item.suffix || '').slice(0, 80),
+      start: Math.max(0, Number(item.start) || 0),
+      end: Math.max(0, Number(item.end) || 0),
+      note,
+      resolved: !!item.resolved,
+      createdAt: String(item.createdAt || new Date().toISOString())
+    }
+  }).filter(Boolean)
+  const file = safePath(currentDir, 'comments.json')
+  if (!file) throw new Error('书路径不合法')
+  try { fs.copyFileSync(file, file + '.bak') } catch {}
+  const body = JSON.stringify({ version: 1, items: clean }, null, 2)
+  // a quick resolve+delete can ask twice before the first write lands; one
+  // write at a time keeps the fixed .tmp name from being shared
+  commentsWriteChain = commentsWriteChain.catch(() => {}).then(() => writeFileDurable(file, body))
+  await commentsWriteChain
+  return true
+})
+
+// the writer's comments as a Markdown sheet for an editor
+ipcMain.handle('comments:export', async (_e, payload) => {
+  requireBook()
+  const text = String((payload && payload.text) || '')
+  if (!text.trim()) throw new Error('没有可导出的批注')
+  const name = plainName((payload && payload.name) || ((currentMeta.title || '未命名') + '-批注'), 80)
+  const file = await askExportPath(name, '.md', 'Markdown')
+  if (!file) return { canceled: true }
+  await fsp.writeFile(file, text, 'utf8')
+  rememberExportDir(file)
+  return { file }
 })
 
 // the room's light or dark, kept for the next launch: the window's own
@@ -1204,51 +1406,132 @@ async function htmlToPdf (html, options) {
   }
 }
 
-ipcMain.handle('export:kdp', async (_e, opts) => {
-  requireBook()
-  const trim = KDP_TRIMS[opts && opts.trim] || KDP_TRIMS['6x9']
-  const paper = opts && opts.paper === 'cream' ? 'cream' : 'white'
-  const { meta, chapters } = readBookFromDisk()
-  const base = plainName(meta.title || '未命名')
-  const interiorFile = await askExportPath(base + '-内页', '.pdf', 'PDF')
-  if (!interiorFile) return { canceled: true }
-  const coverFile = await askExportPath(base + '-封面模板', '.pdf', 'PDF')
-  if (!coverFile) return { canceled: true }
-
-  const interior = await htmlToPdf(kdpInteriorHtml(meta, chapters, {
-    font: opts && opts.font,
-    fontCss: fontsCssUrl()
-  }), {
-    measure: kdpEstimateScript(trim),
-    print: {
-      printBackground: true,
-      // Electron 43 reads a custom page size in inches, not microns
-      pageSize: { width: trim.w, height: trim.h },
-      margins: { top: 0.75, bottom: 0.75, left: 0.875, right: 0.875 },
-      displayHeaderFooter: true,
-      headerTemplate: '<span></span>',
-      footerTemplate: '<div style="width:100%;text-align:center;font-size:9px;color:#555;"><span class="pageNumber"></span></div>'
-    }
+// Paged.js lays the paperback interior out as real pages, so the page count
+// that sets the spine is the count of the PDF, not a guess from DOM heights.
+async function kdpPagedPdf (html, trim) {
+  const paged = fs.readFileSync(path.join(__dirname, 'print', 'paged.polyfill.js'), 'utf8')
+    .replace(/<\/script/gi, '<\\/script')
+  const splice = (s, tag, add) => {
+    const i = s.lastIndexOf(tag)
+    return i < 0 ? s + add : s.slice(0, i) + add + s.slice(i)
+  }
+  let page = splice(html, '</head>', '<script>window.PagedConfig = { auto: false };</script><script>' + paged + '</script>')
+  page = splice(page, '</body>', `<script>
+    PagedPolyfill.preview().then(() => {
+      window.__sagaPages = document.querySelectorAll('.pagedjs_page').length
+    }, (e) => { window.__sagaPagedError = String(e && e.stack || e) })
+  </script>`)
+  const tmp = path.join(app.getPath('temp'), 'saga-kdp-' + process.pid + '-' + Date.now() + '.html')
+  await fsp.writeFile(tmp, page, 'utf8')
+  const printWin = new BrowserWindow({
+    show: false,
+    width: 900,
+    height: 1200,
+    webPreferences: { sandbox: true, contextIsolation: true, offscreen: true, backgroundThrottling: false }
   })
-  await fsp.writeFile(interiorFile, interior.buffer)
-  const pages = pdfPageCount(interior.buffer) || interior.estimate || 1
-  const spine = Math.round(pages * KDP_PAPER[paper] * 1000) / 1000
+  try {
+    await printWin.loadFile(tmp)
+    const started = Date.now()
+    let pages = 0
+    while (Date.now() - started < 10 * 60 * 1000) {
+      if (printWin.isDestroyed()) throw new Error('排版窗口已关闭')
+      const state = await printWin.webContents.executeJavaScript(
+        '[window.__sagaPages || 0, window.__sagaPagedError || ""]')
+      if (state[1]) throw new Error('排版失败：' + String(state[1]).split('\n')[0])
+      if (state[0]) { pages = state[0]; break }
+      await new Promise((resolve) => setTimeout(resolve, 150))
+    }
+    if (!pages) throw new Error('排版超时')
+    const pdf = await printWin.webContents.printToPDF({
+      pageSize: { width: trim.w, height: trim.h },
+      preferCSSPageSize: false,
+      printBackground: true,
+      margins: { marginType: 'none' },
+      generateTaggedPDF: false,
+      generateDocumentOutline: false
+    })
+    return { pdf, pages }
+  } finally {
+    try { printWin.destroy() } catch {}
+    try { fs.unlinkSync(tmp) } catch {}
+  }
+}
 
-  const cover = await htmlToPdf(kdpCoverHtml(meta, pages, spine, trim), {
+async function buildKdpPair (meta, chapters, opts) {
+  const trim = KDP_TRIMS[opts.trim] || KDP_TRIMS['6x9']
+  const paper = opts.paper === 'cream' ? 'cream' : 'white'
+  const interiorHtml = kdpInteriorHtml(meta, chapters, {
+    font: opts.font,
+    fontCss: fontsCssUrl(),
+    trim
+  })
+  let interior
+  let pages
+  try {
+    const made = await kdpPagedPdf(interiorHtml, trim)
+    interior = made.pdf
+    pages = pdfPageCount(made.pdf) || made.pages
+  } catch (err) {
+    logLine('kdp paged failed: ' + (err && err.message ? err.message : err))
+    const made = await htmlToPdf(kdpInteriorHtml(meta, chapters, {
+      font: opts.font,
+      fontCss: fontsCssUrl(),
+      trim,
+      fallback: true
+    }), {
+      print: {
+        printBackground: true,
+        pageSize: { width: trim.w, height: trim.h },
+        margins: { top: 0.75, bottom: 0.75, left: 0.875, right: 0.875 },
+        displayHeaderFooter: true,
+        headerTemplate: '<span></span>',
+        footerTemplate: '<div style="width:100%;text-align:center;font-size:9px;color:#555;"><span class="pageNumber"></span></div>'
+      }
+    })
+    interior = made.buffer
+    pages = pdfPageCount(interior) || 1
+  }
+  const spine = Math.round(pages * KDP_PAPER[paper] * 1000) / 1000
+  const cover = await htmlToPdf(kdpCoverHtml(meta, pages, spine, trim, { guides: !!opts.guides }), {
     print: {
       printBackground: true,
       preferCSSPageSize: true,
       margins: { top: 0, bottom: 0, left: 0, right: 0 }
     }
   })
-  await fsp.writeFile(coverFile, cover.buffer)
-  rememberExportDir(interiorFile)
   const warning = pages > 828
     ? '超过 KDP 单册 828 页上限'
     : pages < 24
       ? '少于 KDP 最少 24 页'
       : ''
-  return { interior: interiorFile, cover: coverFile, pages, spine, warning }
+  return { interior, cover: cover.buffer, pages, spine, warning }
+}
+
+ipcMain.handle('export:kdp', async (_e, opts) => {
+  requireBook()
+  const { meta, chapters } = readBookFromDisk()
+  const base = plainName(meta.title || '未命名')
+  const interiorFile = await askExportPath(base + '-内页', '.pdf', 'PDF')
+  if (!interiorFile) return { canceled: true }
+  const coverFile = await askExportPath(base + '-封面', '.pdf', 'PDF')
+  if (!coverFile) return { canceled: true }
+
+  const made = await buildKdpPair(meta, chapters, {
+    trim: opts && opts.trim,
+    paper: opts && opts.paper,
+    font: opts && opts.font,
+    guides: !!(opts && opts.guides)
+  })
+  await fsp.writeFile(interiorFile, made.interior)
+  await fsp.writeFile(coverFile, made.cover)
+  rememberExportDir(interiorFile)
+  return {
+    interior: interiorFile,
+    cover: coverFile,
+    pages: made.pages,
+    spine: made.spine,
+    warning: made.warning
+  }
 })
 
 function exportDirDefault () {
@@ -1291,9 +1574,13 @@ ipcMain.handle('export:epub', async (_e, opts = {}) => {
   const { meta, chapters } = readBookFromDisk()
   const file = await askExportPath(plainName(meta.title || '未命名'), '.epub', 'EPUB')
   if (!file) return { canceled: true }
-  await fsp.writeFile(file, makeZip(epubFiles(meta, chapters, epubFontPack(opts.font))))
+  const cover = bookCore.coverPack(currentDir, meta)
+  await fsp.writeFile(file, makeZip(epubFiles(meta, chapters, { ...epubFontPack(opts.font), cover })))
   rememberExportDir(file)
-  return { file }
+  const acc = epubAccessibility(meta, chapters)
+  const warnings = acc.warnings.slice()
+  if (String(meta.cover || '').trim() && !cover) warnings.push('封面图片找不到或格式不支持，已跳过')
+  return { file, warnings }
 })
 
 ipcMain.handle('export:docx', async (_e, opts = {}) => {
@@ -1346,12 +1633,143 @@ ipcMain.handle('export:latex', async (_e, opts = {}) => {
   return { file }
 })
 
+/* ---------- a standard manuscript for agents and editors ---------- */
+
+// Paged.js lays the title page and story out as pages, so the running head
+// and page numbers are real pages, not a Chromium header on every sheet
+// (which would also land on the title page).  If it cannot finish, the
+// caller prints the same HTML with Chromium's own header as a fallback.
+async function manuscriptPdfBuffer (model) {
+  const paged = fs.readFileSync(path.join(__dirname, 'print', 'paged.polyfill.js'), 'utf8')
+    .replace(/<\/script/gi, '<\\/script')
+  const splice = (s, tag, add) => {
+    const i = s.lastIndexOf(tag)
+    return i < 0 ? s + add : s.slice(0, i) + add + s.slice(i)
+  }
+  let page = manuscriptHtml(model)
+  page = splice(page, '</head>', '<script>window.PagedConfig = { auto: false };</script><script>' + paged + '</script>')
+  page = splice(page, '</body>', `<script>
+    PagedPolyfill.preview().then(() => {
+      const pages = [...document.querySelectorAll('.pagedjs_page')]
+      const start = pages.findIndex((p) => p.querySelector('.pg1:not([data-split-from])'))
+      if (start >= 0) pages.forEach((p, i) => {
+        p.style.counterReset = 'page ' + (i >= start ? i - start + 1 : 0)
+        p.style.counterIncrement = 'none'
+      })
+      window.__sagaPages = pages.length
+    }, (e) => { window.__sagaPagedError = String(e && e.stack || e) })
+  </script>`)
+  const tmp = path.join(app.getPath('temp'), 'saga-manuscript-' + process.pid + '-' + Date.now() + '.html')
+  await fsp.writeFile(tmp, page, 'utf8')
+  const printWin = new BrowserWindow({
+    show: false,
+    width: 900,
+    height: 1200,
+    webPreferences: { sandbox: true, contextIsolation: true, offscreen: true, backgroundThrottling: false }
+  })
+  try {
+    await printWin.loadFile(tmp)
+    const started = Date.now()
+    let pages = 0
+    while (Date.now() - started < 10 * 60 * 1000) {
+      if (printWin.isDestroyed()) throw new Error('排版窗口已关闭')
+      const state = await printWin.webContents.executeJavaScript(
+        '[window.__sagaPages || 0, window.__sagaPagedError || ""]')
+      if (state[1]) throw new Error('排版失败：' + String(state[1]).split('\n')[0])
+      if (state[0]) { pages = state[0]; break }
+      await new Promise((resolve) => setTimeout(resolve, 150))
+    }
+    if (!pages) throw new Error('排版超时')
+    const paper = model.paper === 'A4' ? { width: 8.2677, height: 11.6929 } : { width: 8.5, height: 11 }
+    const pdf = await printWin.webContents.printToPDF({
+      pageSize: paper,
+      preferCSSPageSize: false,
+      printBackground: true,
+      margins: { marginType: 'none' },
+      generateTaggedPDF: false,
+      generateDocumentOutline: false
+    })
+    return { pdf, pages }
+  } finally {
+    try { printWin.destroy() } catch {}
+    try { fs.unlinkSync(tmp) } catch {}
+  }
+}
+
+function manuscriptHeader (model) {
+  const words = [model.headerName, model.headerTitle].map((x) => String(x || '').trim()).filter(Boolean).join(' / ')
+  return words ? words + ' / ' : ''
+}
+
+async function manuscriptFallbackPdf (model) {
+  const header = String(manuscriptHeader(model))
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return htmlToPdf(manuscriptHtml(model), {
+    print: {
+      printBackground: true,
+      pageSize: model.paper === 'A4' ? { width: 8.2677, height: 11.6929 } : { width: 8.5, height: 11 },
+      margins: { top: 1, bottom: 1, left: 1, right: 1 },
+      displayHeaderFooter: true,
+      headerTemplate: '<div style="width:100%;text-align:right;font:10pt \'Times New Roman\';padding-right:1in;"><span>' +
+        header + '</span><span class="pageNumber"></span></div>',
+      footerTemplate: '<span></span>'
+    }
+  })
+}
+
+ipcMain.handle('export:manuscript', async (_e, opts = {}) => {
+  requireBook()
+  const { meta, chapters } = readBookFromDisk()
+  const format = opts.format === 'pdf' ? 'pdf' : 'docx'
+  const model = manuscriptModel(meta, chapters, opts)
+  const file = await askExportPath(plainName(meta.title || '未命名') + '-投稿稿',
+    format === 'pdf' ? '.pdf' : '.docx', format === 'pdf' ? 'PDF' : 'Word')
+  if (!file) return { canceled: true }
+
+  // the writer's contact details and choices stay with this book
+  const keep = {}
+  for (const key of ['byline', 'headerName', 'headerTitle', 'contactName', 'address', 'phone', 'email', 'font', 'paper']) {
+    if (opts[key] != null) keep[key] = String(opts[key]).trim()
+  }
+  if (opts.end != null) keep.end = !!opts.end
+  meta.manuscript = { ...(meta.manuscript || {}), ...keep }
+  await writeMeta(meta)
+
+  if (format === 'docx') {
+    const entries = manuscriptDocxEntries(model).map((entry) => ({ name: entry.path, data: entry.content }))
+    await fsp.writeFile(file, makeZip(entries))
+    rememberExportDir(file)
+    return { file, words: model.words, wordsText: model.wordsText, pages: null }
+  }
+
+  let pages = null
+  try {
+    const made = await manuscriptPdfBuffer(model)
+    await fsp.writeFile(file, made.pdf)
+    pages = made.pages
+  } catch (err) {
+    logLine('manuscript paged failed: ' + (err && err.message ? err.message : err))
+    const made = await manuscriptFallbackPdf(model)
+    await fsp.writeFile(file, made.buffer)
+    pages = pdfPageCount(made.buffer) || null
+  }
+  rememberExportDir(file)
+  return { file, words: model.words, wordsText: model.wordsText, pages }
+})
+
 ipcMain.handle('export:pdf', async (_e, opts = {}) => {
   requireBook()
   const { meta, chapters } = readBookFromDisk()
   const file = await askExportPath(plainName(meta.title || '未命名'), '.pdf', 'PDF')
   if (!file) return { canceled: true }
-  const html = printHtml(meta, chapters, { font: opts.font, fontCss: fontsCssUrl() })
+  const paper = PDF_PAPERS[opts.paper] || PDF_PAPERS.A4
+  const html = printHtml(meta, chapters, {
+    font: opts.font,
+    fontCss: fontsCssUrl(),
+    paper: opts.paper,
+    fontSize: opts.fontSize,
+    lineHeight: opts.lineHeight
+  })
   const tmp = path.join(app.getPath('temp'), 'saga-print-' + Date.now() + '.html')
   await fsp.writeFile(tmp, html, 'utf8')
   const printWin = new BrowserWindow({
@@ -1365,7 +1783,7 @@ ipcMain.handle('export:pdf', async (_e, opts = {}) => {
     await new Promise((resolve) => setTimeout(resolve, 250))
     const pdf = await printWin.webContents.printToPDF({
       printBackground: true,
-      pageSize: 'A4',
+      pageSize: { width: paper.w, height: paper.h },
       margins: { top: 0.75, bottom: 0.75, left: 0.75, right: 0.75 },
       displayHeaderFooter: true,
       headerTemplate: '<span></span>',

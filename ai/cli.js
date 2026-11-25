@@ -12,7 +12,7 @@ const core = require('./book-core')
 const { openInSaga } = require('./launcher')
 const { exportBook } = require('./export-book')
 
-const VERSION = '1.0.0'
+const VERSION = '1.4.0'
 
 class UsageError extends Error {}
 
@@ -40,7 +40,7 @@ function parseArgs (argv) {
         value = arg.slice(eq + 1)
       }
       if (key === '--help' || key === '--version' || key === '--json' ||
-        key === '--html' || key === '--append' || key === '--stdin') {
+        key === '--html' || key === '--append' || key === '--stdin' || key === '--guides') {
         flags[key.slice(2)] = true
         continue
       }
@@ -77,7 +77,9 @@ function usage () {
   saga delete-chapter <书> <章节>         移入 darlings，不硬删除
   saga meta <书> [--title ...] [--author ...] [--subtitle ...]
   saga export <书> --format <格式> [--out 文件 | --out-dir 文件夹]
-                                          格式：txt md html epub docx odt rtf tex pdf kdp
+                                          格式：txt md html epub docx odt rtf tex pdf
+                                                manuscript（投稿稿 DOCX） manuscript-pdf（投稿稿 PDF）
+                                                kdp（内页 + 封面；可加 --trim 5x8 --paper cream --guides）
   saga darlings <书> [--json]             列出备份文件
   saga open <书>                          在 Saga 窗口中打开
   saga mcp                                以 stdio 启动 MCP 服务
@@ -301,7 +303,8 @@ async function main () {
       out: flags.out,
       outDir: flags['out-dir'],
       trim: flags.trim,
-      paper: flags.paper
+      paper: flags.paper,
+      guides: !!flags.guides
     })
     if (flags.json) return json(data)
     if (data.interior) {
